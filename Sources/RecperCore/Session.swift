@@ -159,10 +159,30 @@ public enum Binder {
         }
     }
 
+    /// Index of the sentence a mark belongs to. Speech is cut where each mark starts, so a mark usually sits
+    /// between two sentences: it belongs to the one that follows (the user draws, then explains),
+    /// unless that one starts more than `longGap` later — then to the previous one (explained first, then drew).
+    public static func anchorIndex(for t: Double, in segs: [Segment]) -> Int? {
+        guard !segs.isEmpty else { return nil }
+        if let i = segs.firstIndex(where: { t >= $0.t0 && t <= $0.t1 }) { return i }
+        let next = segs.firstIndex { $0.t0 >= t }
+        if let n = next, segs[n].t0 - t <= longGap { return n }
+        return segs.lastIndex { $0.t1 <= t } ?? next
+    }
+
+    /// Start times of numbered marks (one per number): speech is also cut there, so each mark gets its own item.
+    public static func markCuts(_ shots: [Shot]) -> [Double] {
+        var first: [Int: Double] = [:]
+        for s in shots { for m in s.marks { if let n = m.n { first[n] = min(first[n] ?? m.t, m.t) } } }
+        return first.values.sorted()
+    }
+
     public static func bind(_ shots: [Shot], to segs: [Segment]) -> [Shot] {
         shots.map { s in
             var s = s
-            s.segment = segmentIndex(for: s.t, in: segs).map { segs[$0].id }
+            // A screenshot with marks belongs where its first mark belongs; a plain one to what was just said.
+            let i = s.marks.contains { $0.n != nil } ? anchorIndex(for: s.t, in: segs) : segmentIndex(for: s.t, in: segs)
+            s.segment = i.map { segs[$0].id }
             return s
         }
     }
@@ -200,16 +220,44 @@ public enum Sentences {
         return out
     }
 
+    /// Moves each mark cut back to where its explanation starts: people name the thing ("with red…") just
+    /// before drawing. Within `lookback` seconds before the mark, the cut goes to the longest pause (≥ `minPause`);
+    /// with no pause it stays at the mark. Cuts never move before the previous cut.
+    public static func alignCuts(_ cuts: [Double], words: [Word], lookback: Double = 4, minPause: Double = 0.4) -> [Double] {
+        var out: [Double] = []
+        for c in cuts.sorted() {
+            let floor = max(c - lookback, (out.last ?? -.infinity) + 0.05)
+            var best: (pause: Double, at: Double)?
+            for i in words.indices.dropFirst() {
+                let w = words[i], prev = words[i - 1]
+                guard w.t0 > floor, w.t0 <= c else { continue }
+                let pause = w.t0 - prev.t1
+                if pause >= minPause, pause > (best?.pause ?? 0) { best = (pause, w.t0) }
+            }
+            out.append(best?.at ?? c)
+        }
+        return out
+    }
+
     /// Merges short fragments into their neighbor ("Siri can you" + "hear me", one-word crumbs):
     /// two sentences merge if either has at most `short` words and the silence between is under `maxGap` s.
     /// Never merges across a screenshot moment (`cuts`); a merged sentence never exceeds `maxWords`. IDs are renumbered.
-    public static func tidy(_ segs: [Segment], cuts: [Double] = [], short: Int = 3, maxGap: Double = 4, maxWords: Int = 45) -> [Segment] {
+    ///
+    /// `markCuts` (subset of `cuts`): an item that starts at a mark keeps the speech that follows until the next cut,
+    /// as long as pauses stay under `Binder.longGap` — the whole explanation of one mark is one item.
+    public static func tidy(_ segs: [Segment], cuts: [Double] = [], markCuts: [Double] = [], short: Int = 3, maxGap: Double = 4, maxWords: Int = 45) -> [Segment] {
         var out: [Segment] = []
+        var lastLed = false                       // does the last item start at a mark?
+        var prevEnd = -Double.infinity
         for s in segs {
+            let led = markCuts.contains { $0 > prevEnd - 0.01 && $0 <= s.t0 + 0.01 }
+            prevEnd = s.t1
             if var last = out.last {
                 let cut = cuts.contains { $0 > last.t1 - 0.01 && $0 <= s.t0 + 0.01 }
                 let n1 = last.text.split(separator: " ").count, n2 = s.text.split(separator: " ").count
-                if !cut, s.t0 - last.t1 < maxGap, min(n1, n2) <= short, n1 + n2 <= maxWords {
+                let fragment = s.t0 - last.t1 < maxGap && min(n1, n2) <= short
+                let sameMark = lastLed && s.t0 - last.t1 < Binder.longGap
+                if !cut, fragment || sameMark, n1 + n2 <= maxWords {
                     last.text += " " + s.text
                     last.t1 = s.t1
                     last.words += s.words
@@ -218,6 +266,7 @@ public enum Sentences {
                 }
             }
             out.append(s)
+            lastLed = led
         }
         let first = segs.first.flatMap { Int($0.id.dropFirst()) } ?? 1
         for i in out.indices { out[i].id = "s\(first + i)" }
@@ -260,7 +309,7 @@ public enum Writer {
         var seenN = Set<Int>()
         for s in doc.shots {
             for m in s.marks {
-                guard let n = m.n, seenN.insert(n).inserted, let i = Binder.segmentIndex(for: m.t, in: doc.segments) else { continue }
+                guard let n = m.n, seenN.insert(n).inserted, let i = Binder.anchorIndex(for: m.t, in: doc.segments) else { continue }
                 marksBySeg[doc.segments[i].id, default: []].append((shotNo[s.id]!, n))
             }
         }

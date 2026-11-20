@@ -13,7 +13,12 @@ if let i = args.firstIndex(of: "--render-md"), i + 1 < args.count,
    let d = try? Data(contentsOf: URL(fileURLWithPath: args[i + 1])) {
     let dec = JSONDecoder(); dec.dateDecodingStrategy = .iso8601
     if var doc = try? dec.decode(SessionDoc.self, from: d) {
-        doc.segments = Sentences.tidy(doc.segments, cuts: doc.shots.compactMap(\.taken))
+        // Re-split from the words with the same cuts as a live session (screenshot moments + mark starts).
+        var words: [Word] = [], breaks = Set<Int>()
+        for s in doc.segments { words += s.words; if !words.isEmpty { breaks.insert(words.count - 1) } }
+        let markCuts = Sentences.alignCuts(Binder.markCuts(doc.shots), words: words)
+        let cuts = (doc.shots.compactMap(\.taken) + markCuts).sorted()
+        doc.segments = Sentences.tidy(Sentences.split(words, startID: 1, breaks: breaks, cuts: cuts), cuts: cuts, markCuts: markCuts)
         doc.shots = Binder.bind(doc.shots, to: doc.segments)
         print(Writer.markdown(doc))
     }

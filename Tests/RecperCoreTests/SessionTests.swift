@@ -141,3 +141,29 @@ extension JSONDecoder {
     #expect(md.contains("- [ ] 1. what is this green [00:00]\n      ↳ drawn while speaking: #1 (screenshot 1)\n"))
     #expect(md.contains("- [ ] 2. and what are these [00:06]\n      ↳ drawn while speaking: #2 (screenshot 1)\n"))
 }
+
+/// Real timings from a session: the user names the color, pauses, then draws. Each mark must get its own item,
+/// starting where its explanation starts (not where the pen touched down).
+@Test func marksSplitSpeechAtTheirExplanation() {
+    let raw: [(String, Double, Double)] = [
+        ("with", 4.76, 5.03), ("red", 7.94, 8.63), ("I", 9.20, 10.88), ("paint", 10.88, 11.54), ("a", 11.54, 11.75),
+        ("problem", 11.87, 12.74), ("then", 13.94, 14.21), ("next", 14.21, 14.78), ("blue", 15.65, 16.46),
+        ("this", 16.46, 17.21), ("needs", 17.21, 18.95), ("adding", 19.73, 21.83), ("look", 22.58, 22.97),
+        ("yellow", 23.18, 24.83), ("another", 26.42, 26.69), ("problem", 26.75, 27.65),
+    ]
+    let words = raw.map { Word(w: $0.0, t0: $0.1, t1: $0.2) }
+    let shot = Shot(id: "01", t: 9.2, file: "shots/01.png", size: [10, 10], marks: [
+        Mark(tool: .pen, t: 9.2, t1: 11.7, points: [[0, 0]], n: 1),
+        Mark(tool: .pen, t: 16.3, t1: 18.9, points: [[0, 0]], color: .blue, n: 2),
+        Mark(tool: .pen, t: 24.1, t1: 27.1, points: [[0, 0]], color: .yellow, n: 3),
+    ], taken: 30)
+    let markCuts = Sentences.alignCuts(Binder.markCuts([shot]), words: words)
+    #expect(markCuts == [7.94, 13.94, 22.58])          // moved back to the pause before each explanation
+    let cuts = (markCuts + [30]).sorted()
+    let segs = Sentences.tidy(Sentences.split(words, startID: 1, breaks: [Set(words.indices)].first!, cuts: cuts),
+                              cuts: cuts, markCuts: markCuts)
+    #expect(segs.map(\.text) == ["with", "red I paint a problem", "then next blue this needs adding", "look yellow another problem"])
+    #expect(Binder.anchorIndex(for: 9.2, in: segs) == 1)
+    #expect(Binder.anchorIndex(for: 16.3, in: segs) == 2)
+    #expect(Binder.anchorIndex(for: 24.1, in: segs) == 3)
+}

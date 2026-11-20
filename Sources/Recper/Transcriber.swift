@@ -194,6 +194,9 @@ final class Transcriber: @unchecked Sendable {
     }
 
     /// Sentences finalized so far (fallback if stopping hangs).
+    /// Finalized words and the indices where a final result ended (for splitting with custom cuts).
+    func wordsAndBreaks() -> ([Word], Set<Int>) { lock.withLock { (words, breaks) } }
+
     func segmentsSoFar(cuts: [Double] = []) -> [Segment] { lock.withLock { Sentences.split(words, startID: 1, breaks: breaks, cuts: cuts) } }
 
     /// Stops recording, waits for the final results, returns the sentences.

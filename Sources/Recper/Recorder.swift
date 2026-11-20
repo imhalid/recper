@@ -293,9 +293,12 @@ final class Recorder {
         if !pending.isEmpty { snapshot() }
         for _ in 0..<100 where capturing { try? await Task.sleep(for: .milliseconds(50)) }   // at most 5 s
         let tr = transcriber
-        let cuts = shots.compactMap(\.taken)
-        let raw = (try? await withTimeout(5, "Dictation") { await tr.stop(cuts: cuts) }) ?? tr.segmentsSoFar(cuts: cuts)
-        let segments = Sentences.tidy(raw, cuts: cuts)      // short fragments merge into a neighbor
+        _ = try? await withTimeout(5, "Dictation") { await tr.stop() }
+        let (words, breaks) = tr.wordsAndBreaks()
+        // Cut at screenshot moments and where each mark's explanation starts: every mark gets its own item.
+        let markCuts = Sentences.alignCuts(Binder.markCuts(shots), words: words)
+        let cuts = (shots.compactMap(\.taken) + markCuts).sorted()
+        let segments = Sentences.tidy(Sentences.split(words, startID: 1, breaks: breaks, cuts: cuts), cuts: cuts, markCuts: markCuts)
         let duration = now
         let scale = Capture.scale(for: target)
         let size = [Int(target.frame.width * scale), Int(target.frame.height * scale)]
