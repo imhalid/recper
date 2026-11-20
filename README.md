@@ -96,6 +96,12 @@ Marks are burned into the screenshot with their numbers, and blurred regions are
 - **Output**: `feedback.md` checklist + `session.json` + `shots/*.png`, and a ready-to-paste prompt on the clipboard.
 - **MCP server** (`Recper --mcp`) so agents can read feedback, check off items, and ask you for feedback themselves.
 
+## Install
+
+Download `Recper.zip` from the [latest release](https://github.com/imhalid/recper/releases/latest), unzip it and move
+`Recper.app` to Applications. The app is ad-hoc signed (not notarized), so the first time, right-click it and choose
+**Open**, or run `xattr -dr com.apple.quarantine /Applications/Recper.app`.
+
 ## Requirements
 
 - macOS 26 or later, Apple Silicon
@@ -201,6 +207,51 @@ requests. Blurred regions are blurred in the pixels before a screenshot is writt
 
 ```sh
 scripts/test.sh
+```
+
+## Performance
+
+recper is small and stays out of the way: it does nothing while idle, and its heavy work (burning marks into a
+screenshot) takes a few tens of milliseconds.
+
+### Size
+
+| | Size |
+|---|---:|
+| Recper.app | 2.0 MB |
+| Recper.zip (download) | 838 KB |
+| Swift source | 11.4k lines |
+| Tests | 40 |
+
+No dependencies: AppKit, SwiftUI, ScreenCaptureKit, Speech and AVFoundation only. No audio or image assets; sounds are synthesized.
+
+### Runtime
+
+| State | CPU | Memory |
+|---|---:|---:|
+| Idle in the menu bar | 0.0 % | 10 MB |
+| Choosing a target (edge glow on) | 9.8 % | 21 MB |
+| Idle again after cancelling | 0.0 % | 22 MB |
+
+Process start after `open`: ~90 ms. Animations run only while their window is on screen, and the sound engine
+stops 3 s after the last sound.
+
+### Hot paths (median)
+
+| Operation | Input | Time |
+|---|---|---:|
+| Compose screenshot | 1800×1200, 5 marks + 1 blur region | 32.4 ms |
+| Write PNG | 1800×1200 | 15.8 ms |
+| Write `feedback.md` | 60 sentences, 25 screenshots | 0.19 ms |
+| Circle gesture detector | per mouse-move event | 12–15 ns |
+| Draw a tool cursor | 2× Retina, first use (cached after) | 0.36 ms |
+| Synthesize a UI sound | 3 voices, 48 kHz stereo | 0.14 ms |
+
+_Measured on an Apple M1 (16 GB), macOS 26.6. Reproduce with:_
+
+```sh
+scripts/bench.sh            # sizes, runtime CPU/memory and hot paths (relaunches recper)
+build/Recper.app/Contents/MacOS/Recper --benchmark   # hot paths only
 ```
 
 ## Roadmap

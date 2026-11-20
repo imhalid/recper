@@ -19,10 +19,13 @@ enum Aurora {
 /// Conic aurora that spins forever; sized to cover its container at any angle.
 struct SpinningAurora: View {
     var period: Double = 6
+    /// When false the gradient stands still and costs nothing. Hidden windows keep their SwiftUI timelines running,
+    /// so callers pass false whenever their window is not on screen.
+    var active = true
     var body: some View {
         GeometryReader { g in
             let d = hypot(g.size.width, g.size.height)
-            TimelineView(.animation(minimumInterval: 1 / 60)) { ctx in
+            TimelineView(.animation(minimumInterval: 1 / 60, paused: !active)) { ctx in
                 let a = ctx.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period) / period * 360
                 Aurora.conic
                     .frame(width: d, height: d)
@@ -81,7 +84,7 @@ struct EdgeGlow: View {
         let on = state.on
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
         ZStack {
-            SpinningAurora(period: 9)
+            SpinningAurora(period: 9, active: state.on)
                 .mask {
                     ZStack {
                         shape.strokeBorder(lineWidth: 2.5)

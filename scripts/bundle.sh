@@ -16,8 +16,8 @@ cat > $APP/Contents/Info.plist <<'PLIST'
   <key>CFBundleIdentifier</key><string>dev.halid.recper</string>
   <key>CFBundleExecutable</key><string>Recper</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.0.1</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundleVersion</key><string>2</string>
   <key>CFBundleDevelopmentRegion</key><string>en</string>
   <key>LSMinimumSystemVersion</key><string>26.0</string>
   <key>NSHighResolutionCapable</key><true/>

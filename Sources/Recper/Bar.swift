@@ -23,6 +23,8 @@ final class BarModel: ObservableObject {
     @Published var shutterTick = 0
     /// Increments every time the bar is shown (replays the entrance animation).
     @Published var appearTick = 0
+    /// The bar panel is on screen (gates the aurora rim's animation).
+    @Published var visible = false
     /// Microphone level (separate object: only the waveform redraws).
     let meter = Meter()
 
@@ -127,12 +129,12 @@ struct BarView: View {
                     ZStack {
                         // Aurora bloom behind the glass, then the glass, then a thin spinning aurora rim.
                         // The gradient extends `UI.bloom` past the bar so the blurred glow fades out fully instead of being cut.
-                        SpinningAurora(period: 7)
+                        SpinningAurora(period: 7, active: model.visible)
                             .mask(shape.strokeBorder(lineWidth: 8).blur(radius: 10).padding(UI.bloom))
                             .padding(-UI.bloom)
                             .opacity(0.7)
                         Surface(shape: shape)
-                        SpinningAurora(period: 7).mask(shape.strokeBorder(lineWidth: 1.2)).opacity(0.9)
+                        SpinningAurora(period: 7, active: model.visible).mask(shape.strokeBorder(lineWidth: 1.2)).opacity(0.9)
                     }
                 } else {
                     // Session: the same glass, with a still (non-spinning) aurora rim and a fainter bloom.

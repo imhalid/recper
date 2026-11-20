@@ -32,6 +32,9 @@ enum Cursors {
         tool == .pen ? CGPoint(x: 11, y: 11) : CGPoint(x: 13, y: 13)
     }
 
+    /// Draws a cursor without the cache (benchmarks).
+    static func renderUncached(_ tool: Tool, _ color: InkColor) -> NSCursor { make(tool, color) }
+
     private static func make(_ tool: Tool, _ color: InkColor) -> NSCursor {
         let hot = hotSpot(for: tool)
         let img = NSImage(size: canvasSize)

@@ -57,6 +57,9 @@ final class Sounds: @unchecked Sendable {
     private var players: [AVAudioPlayerNode] = []
     private var next = 0
     private var started = false
+    /// Stops the engine shortly after the last sound: a running output engine keeps CoreAudio's I/O thread busy
+    /// (and the audio hardware awake) even in silence.
+    private var idleStop: DispatchWorkItem?
     private var lastPlayed: [String: Date] = [:]
     private lazy var format = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2)!
 
@@ -85,6 +88,14 @@ final class Sounds: @unchecked Sendable {
             p.stop()
             p.scheduleBuffer(buf, at: nil, options: [], completionHandler: nil)
             p.play()
+            idleStop?.cancel()
+            let stop = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.engine.stop()
+                self.started = false
+            }
+            idleStop = stop
+            queue.asyncAfter(deadline: .now() + 3, execute: stop)
         }
     }
 
@@ -117,7 +128,7 @@ final class Sounds: @unchecked Sendable {
 
     // MARK: Rendering
 
-    private func render(_ voices: [Voice]) -> AVAudioPCMBuffer? {
+    func render(_ voices: [Voice]) -> AVAudioPCMBuffer? {
         let detune = pow(2, Double.random(in: -8...8) / 1200)
         let length = (voices.map { $0.delay + ($0.attack ?? ($0.filter != nil ? 0.001 : 0.002)) + $0.hold + $0.decay }.max() ?? 0) + 0.03
         let n = AVAudioFrameCount(length * rate)

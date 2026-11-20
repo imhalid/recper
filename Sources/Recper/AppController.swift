@@ -683,6 +683,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// Before sending: fix sentences, inspect/remove screenshots & items.
     private func review(_ doc: SessionDoc, _ r: Recorder) {
         barPanel.orderOut(nil)
+        bar.visible = false
         var images: [String: NSImage] = [:]
         var urls: [String: URL] = [:]
         for s in doc.shots {
@@ -714,6 +715,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             bar.notice = "Saved ·\(md.deletingLastPathComponent().lastPathComponent)"
         }
         barPanel.orderFrontRegardless()
+        bar.visible = true
         replaceBar()
         focusTarget()
         try? await Task.sleep(for: .seconds(1.6))
@@ -754,6 +756,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         overlays.forEach { $0.window.orderOut(nil) }
         overlays = []
         barPanel.orderOut(nil)
+        bar.visible = false
         recorder = nil
         bar.target = nil
         bar.startedAt = nil
@@ -824,6 +827,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         barScreen = screen
         bar.appearTick += 1        // replay the entrance animation
         barPanel.orderFrontRegardless()
+        bar.visible = true
         replaceBar()
     }
 

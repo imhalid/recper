@@ -3,6 +3,12 @@ import RecperCore
 
 // `Recper --render-preview <dir>`: renders overlay and bar states to PNG (no permissions, no screen capture).
 let args = CommandLine.arguments
+// `Recper --benchmark`: times the hot paths and prints a Markdown table.
+if args.contains("--benchmark") {
+    MainActor.assumeIsolated { Benchmark.run() }
+    exit(0)
+}
+
 // `Recper --render-media <dir>`: renders the README's screenshots and GIFs (synthetic scenes).
 if let i = args.firstIndex(of: "--render-media"), i + 1 < args.count {
     MainActor.assumeIsolated { Preview.renderMedia(to: args[i + 1]) }
