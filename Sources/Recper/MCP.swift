@@ -153,6 +153,11 @@ enum MCPServer {
 
     private static func session(_ name: String?) throws -> URL {
         if let name, !name.isEmpty {
+            // A session is a plain folder name inside the sessions root; anything else (paths, "..") could
+            // read or, via mark_done, write a feedback.md elsewhere on disk.
+            guard !name.contains("/"), !name.contains("\\"), name != ".", name != "..", !name.hasPrefix(".") else {
+                throw ToolError(message: "Invalid session name: \(name)")
+            }
             let u = root.appendingPathComponent(name)
             guard FileManager.default.fileExists(atPath: u.appendingPathComponent("feedback.md").path) else {
                 throw ToolError(message: "No such session: \(name)")
