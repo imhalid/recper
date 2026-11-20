@@ -49,7 +49,7 @@ enum Preview {
         let gs = GlowState(); gs.on = true
         let edge = ZStack { Color(red: 0.12, green: 0.13, blue: 0.16); EdgeGlow(state: gs, radius: 12) }.frame(width: 1440, height: 900)
         writeSwiftUI(edge, to: url.appendingPathComponent("6b-edge-glow.png"))
-        let radialItems = [("pencil.tip", "Pen"), ("rectangle", "Box"), ("arrow.up.right", "Arrow"),
+        let radialItems = [("cursorarrow", "Cursor"), ("pencil.tip", "Pen"), ("rectangle", "Box"), ("arrow.up.right", "Arrow"),
                            ("checkmark", "Finish"), ("arrow.uturn.backward", "Undo"), ("eye.slash", "Blur")]
         let rm = RadialModel(); rm.shown = true; rm.selected = 1
         writeSwiftUI(RadialView(model: rm, items: radialItems), to: url.appendingPathComponent("6c-radial.png"))

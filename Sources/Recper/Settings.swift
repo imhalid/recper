@@ -674,7 +674,8 @@ final class SettingsWindow: NSWindow, NSWindowDelegate {
         titlebarAppearsTransparent = true
         titleVisibility = .hidden
         isOpaque = false
-        backgroundColor = .clear
+        // A real (dark) window background lets macOS draw the window's own rounded corners and shadow on all four corners.
+        backgroundColor = NSColor(white: 0.09, alpha: 1)
         isMovableByWindowBackground = true
         isReleasedWhenClosed = false
         appearance = NSAppearance(named: .darkAqua)
@@ -682,10 +683,15 @@ final class SettingsWindow: NSWindow, NSWindowDelegate {
         delegate = self
         model.hostWindow = self
 
-        let host = FirstMouseHostingView(rootView: SettingsView(model: model))
+        // The content runs under the transparent title bar (the sidebar leaves room for the traffic lights);
+        // without this the hosting view insets it by the title bar height, leaving an empty strip on top and clipping the bottom.
+        let host = FirstMouseHostingView(rootView: AnyView(SettingsView(model: model).ignoresSafeArea()))
         host.frame = NSRect(x: 0, y: 0, width: SUI.width, height: SUI.height)
+        host.sizingOptions = []     // the window keeps exactly SUI.width × SUI.height (no extra title-bar height)
         contentView = host
-        setContentSize(NSSize(width: SUI.width, height: SUI.height))
+        // With a full-size content view the whole frame is content: size the frame itself, not the content rect
+        // (setContentSize would add the title bar height and leave an empty strip at the bottom).
+        setFrame(NSRect(x: 0, y: 0, width: SUI.width, height: SUI.height), display: false)
         center()
     }
 
@@ -1531,7 +1537,7 @@ private struct ShortcutsPane: View {
                                 .font(.system(size: 13.5, weight: .semibold)).foregroundStyle(.white)
                             HStack(spacing: 3) { Keycap("⌥"); Keycap("⇧"); Keycap("S") }
                         }
-                        Text("Opens a dial at your pointer during a session from any app. Click Pen, Box, Arrow, Finish, Undo, or Blur — or click the center to take a screenshot.")
+                        Text("Opens a dial at your pointer during a session from any app. Click Cursor, Pen, Box, Arrow, Finish, Undo, or Blur — or click the center to take a screenshot.")
                             .font(.system(size: 11.5))
                             .foregroundStyle(SUI.soft)
                             .fixedSize(horizontal: false, vertical: true)
@@ -1627,9 +1633,9 @@ private struct ShortcutGroupCard: View {
     }
 }
 
-/// Flat monochrome schematic of Recper's 6-sector Radial Menu.
+/// Flat monochrome schematic of Recper's 7-sector Radial Menu.
 private struct RadialMiniDiagram: View {
-    private static let symbols = ["pencil.tip", "rectangle", "arrow.up.right", "checkmark", "arrow.uturn.backward", "eye.slash"]
+    private static let symbols = ["cursorarrow", "pencil.tip", "rectangle", "arrow.up.right", "checkmark", "arrow.uturn.backward", "eye.slash"]
 
     var body: some View {
         ZStack {
@@ -1637,8 +1643,8 @@ private struct RadialMiniDiagram: View {
                 .fill(Color.white.opacity(0.05))
                 .overlay(Circle().strokeBorder(Color.white.opacity(0.14), lineWidth: 1))
 
-            ForEach(0..<6, id: \.self) { i in
-                let a = Double(i) * 60 - 90
+            ForEach(0..<Self.symbols.count, id: \.self) { i in
+                let a = Double(i) * 360 / Double(Self.symbols.count) - 90
                 let rad = a * .pi / 180
                 Image(systemName: Self.symbols[i])
                     .font(.system(size: 8.5, weight: .medium))

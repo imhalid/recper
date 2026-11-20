@@ -1154,18 +1154,19 @@ struct RadialView: View {
     }
 
     private func statusText(activeIndex: Int?, isCenter: Bool, isCancelled: Bool) -> (String, String) {
-        if isCancelled { return ("Cancel", "release") }
-        if isCenter { return ("Screenshot", "release") }
+        if isCancelled { return ("Close", "click") }
+        if isCenter { return ("Screenshot", "click") }
         guard let i = activeIndex, i < items.count else { return ("", "") }
         let title = items[i].1
         let cue: String = switch title.lowercased() {
+        case "cursor": "clicks go to the app"
         case "pen": "freehand"
         case "box": "frame"
         case "arrow": "point"
         case "finish": "save & copy"
         case "undo": "step back"
         case "blur": "redact"
-        default: "release"
+        default: "click"
         }
         return (title, cue)
     }

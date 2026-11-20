@@ -69,7 +69,7 @@ survive rebuilds.
 | `Esc` | Deselect a selected mark; otherwise back to the cursor (clicks go to the app underneath) |
 | Click & drag a mark | Select a box, ellipse, arrow, or blur region to move its body or drag edges/corners/endpoints to resize (works while drawing and in cursor mode when hovering a mark) |
 | Circle with mouse | In cursor mode (without clicking), loop around a region to drop a numbered ellipse mark |
-| `⌥⇧S` | During a session, from any app: opens a radial menu at the pointer; click pen, box, arrow, finish, undo or blur, or the center for a screenshot. Click outside, Esc or `⌥⇧S` closes it |
+| `⌥⇧S` | During a session, from any app: opens a radial menu at the pointer; click cursor, pen, box, arrow, finish, undo or blur, or the center for a screenshot. Click outside, Esc or `⌥⇧S` closes it |
 | `⌥⇧V` `P` `B` `O` `A` `X` `S` `Z` | During a session, from any app: cursor, pen, box, ellipse, arrow, blur, screenshot, undo |
 | `⌘⏎` / `Esc` (Review) | Send (save & copy prompt) / save without copying; click any thumbnail to inspect it large |
 

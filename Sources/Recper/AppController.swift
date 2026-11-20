@@ -41,6 +41,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         let m = RadialMenu()
         m.onShutter = { [weak self] in self?.shutter() }
         m.items = [
+            .init(symbol: "cursorarrow", title: "Cursor") { [weak self] in self?.setTool(nil) },
             .init(symbol: "pencil.tip", title: "Pen") { [weak self] in self?.setTool(.pen) },
             .init(symbol: "rectangle", title: "Box") { [weak self] in self?.setTool(.box) },
             .init(symbol: "arrow.up.right", title: "Arrow") { [weak self] in self?.setTool(.arrow) },
@@ -139,6 +140,8 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     /// `recper://start?mode=area&prompt=…`: an agent (MCP request_feedback) is asking for feedback.
     func application(_ application: NSApplication, open urls: [URL]) {
+        // `recper://settings`: opens the Settings window.
+        if urls.contains(where: { $0.scheme == "recper" && $0.host == "settings" }) { openSettings() }
         for url in urls where url.scheme == "recper" && url.host == "start" {
             let q = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
             if let m = q.first(where: { $0.name == "mode" })?.value.flatMap(CaptureMode.init) { bar.mode = m }
