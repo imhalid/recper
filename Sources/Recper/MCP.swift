@@ -45,7 +45,7 @@ enum MCPServer {
             return [
                 "protocolVersion": (p["protocolVersion"] as? String) ?? protocolVersion,
                 "capabilities": ["tools": [String: Any]()],
-                "serverInfo": ["name": "recper", "version": "0.1.0"],
+                "serverInfo": ["name": "recper", "version": "0.1.1"],
                 "instructions": """
                 recper: the user's on-screen voice + drawing feedback. The #n badges in images are marks the user \
                 drew. Use get_feedback to read feedback; check off each item you apply with mark_done; \
