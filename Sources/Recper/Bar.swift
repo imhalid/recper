@@ -21,6 +21,8 @@ final class BarModel: ObservableObject {
     @Published var paletteOpen = false
     /// Increments on every shutter press (button animation).
     @Published var shutterTick = 0
+    /// Increments every time the bar is shown (replays the entrance animation).
+    @Published var appearTick = 0
     /// Microphone level (separate object: only the waveform redraws).
     let meter = Meter()
 
@@ -61,13 +63,18 @@ final class Meter: ObservableObject {
 // The selected tool is marked by a white "pill" that springs between tools.
 
 private enum UI {
-    static let h: CGFloat = 38                   // bar height
-    static let b: CGFloat = 28                   // button size
+    static let h: CGFloat = 50                   // session bar height
+    static let chooseH: CGFloat = 64             // chooser height (mode tiles)
+    static let chooseR: CGFloat = 22
+    static let bloom: CGFloat = 32               // how far the chooser's glow reaches past its edge
+    static let b: CGFloat = 34                   // button size
+    static let sessionR: CGFloat = 18
     static let ink = Color.white
     static let soft = Color.white.opacity(0.62)
     static let dim = Color.white.opacity(0.4)
     static let hair = Color.white.opacity(0.1)
     static let rec = Color(red: 1, green: 0.28, blue: 0.24)
+    static let go = Color(red: 0.55, green: 1.0, blue: 0.5)     // selected mode accent (green)
     static let spring = Animation.spring(response: 0.32, dampingFraction: 0.78)
     static func mono(_ s: CGFloat, _ w: Font.Weight = .medium) -> Font { .system(size: s, weight: w).monospacedDigit() }
 }
@@ -101,8 +108,11 @@ struct BarView: View {
     @ObservedObject var model: BarModel
     /// Previews (ImageRenderer) can't draw real glass: use a flat dark background.
     nonisolated(unsafe) static var flatBackground = false
+    /// Entrance of the capsule itself (grows in from slightly smaller; the items then stagger in).
+    @State private var pop = BarView.flatBackground
 
     var body: some View {
+        let choosing = model.target == nil
         VStack(spacing: 8) {
             // While the palette is open, room is reserved above (the caption is hidden meanwhile).
             if model.paletteOpen { Color.clear.frame(width: 1, height: 66) }
@@ -110,15 +120,49 @@ struct BarView: View {
             Group {
                 if let target = model.target { SessionRow(model: model, target: target) } else { ChooseRow(model: model) }
             }
-            .frame(height: UI.h)
-            .background(Surface(shape: Capsule()))
+            .frame(height: choosing ? UI.chooseH : UI.h)
+            .background {
+                if choosing {
+                    let shape = RoundedRectangle(cornerRadius: UI.chooseR, style: .continuous)
+                    ZStack {
+                        // Aurora bloom behind the glass, then the glass, then a thin spinning aurora rim.
+                        // The gradient extends `UI.bloom` past the bar so the blurred glow fades out fully instead of being cut.
+                        SpinningAurora(period: 7)
+                            .mask(shape.strokeBorder(lineWidth: 8).blur(radius: 10).padding(UI.bloom))
+                            .padding(-UI.bloom)
+                            .opacity(0.7)
+                        Surface(shape: shape)
+                        SpinningAurora(period: 7).mask(shape.strokeBorder(lineWidth: 1.2)).opacity(0.9)
+                    }
+                } else {
+                    // Session: the same glass, with a still (non-spinning) aurora rim and a fainter bloom.
+                    let shape = RoundedRectangle(cornerRadius: UI.sessionR, style: .continuous)
+                    ZStack {
+                        Aurora.conic
+                            .mask(shape.strokeBorder(lineWidth: 8).blur(radius: 10).padding(UI.bloom))
+                            .padding(-UI.bloom)
+                            .opacity(0.4)
+                        Surface(shape: shape)
+                        Aurora.conic.mask(shape.strokeBorder(lineWidth: 1)).opacity(0.7)
+                    }
+                }
+            }
+            .scaleEffect(pop ? 1 : 0.88, anchor: .bottom)
+            .opacity(pop ? 1 : 0)
+            .blur(radius: pop ? 0 : 6)
         }
-        .padding(9)                       // room for the shadow
+        .padding(UI.bloom + 4)    // room for the shadow and the aurora bloom
         .shadow(color: .black.opacity(0.28), radius: 1, y: 0.5)          // 1: contact (sharp, close)
         .shadow(color: .black.opacity(0.14), radius: 6, y: 3)            // 2: ambient (soft, light)
         .environment(\.colorScheme, .dark)
         .fixedSize()
         .onGeometryChange(for: CGSize.self) { $0.size } action: { model.onSize?($0) }
+        .onChange(of: model.appearTick) {
+            var t = Transaction(); t.disablesAnimations = true
+            withTransaction(t) { pop = false }
+            DispatchQueue.main.async { withAnimation(.spring(response: 0.32, dampingFraction: 0.72)) { pop = true } }
+        }
+        .onAppear { if !pop { withAnimation(.spring(response: 0.28, dampingFraction: 0.78)) { pop = true } } }
     }
 
     static func clock(_ s: TimeInterval) -> String {
@@ -131,40 +175,140 @@ struct BarView: View {
 private struct ChooseRow: View {
     @ObservedObject var model: BarModel
     @Namespace private var ns
+    /// Entrance: items arrive one after another (stagger). Previews render the final state directly.
+    @State private var shown = BarView.flatBackground
+
+    private static let modes: [(CaptureMode, String, String, String)] = [
+        (.window, "Window", "macwindow", "1"),
+        (.area, "Area", "viewfinder", "2"),
+        (.screen, "Screen", "display", "3"),
+    ]
+
     var body: some View {
-        HStack(spacing: 2) {
-            seg(.window, "Window", "macwindow", "1")
-            seg(.area, "Area", "rectangle.dashed", "2")
-            seg(.screen, "Screen", "display", "3")
-            Hair()
-            Text(hint).font(.system(size: 10.5)).foregroundStyle(UI.dim).fixedSize().padding(.horizontal, 6)
-            Round(symbol: "xmark", help: "Cancel (Esc)") { model.onCancel?() }
-        }
-        .padding(.horizontal, 5)
-    }
-
-    private var hint: String {
-        switch model.mode {
-        case .window: "Click a window"
-        case .area: "Drag · ⏎ last area"
-        case .screen: "Click a screen · ⏎"
-        }
-    }
-
-    private func seg(_ m: CaptureMode, _ title: String, _ symbol: String, _ key: String) -> some View {
-        let on = model.mode == m
-        return Button { withAnimation(UI.spring) { model.onMode?(m) } } label: {
-            HStack(spacing: 6) {
-                Image(systemName: symbol).font(.system(size: 11.5, weight: .medium))
-                Text(title).font(.system(size: 12, weight: .semibold)).tracking(-0.2)
-                Text(key).font(UI.mono(9.5, .semibold)).opacity(on ? 0.35 : 0.3)
+        HStack(spacing: 4) {
+            ForEach(Array(Self.modes.enumerated()), id: \.offset) { i, m in
+                ModeTile(model: model, mode: m.0, title: m.1, symbol: m.2, key: m.3, ns: ns).enter(shown, i)
             }
-            .foregroundStyle(on ? Color.black : UI.soft)
-            .padding(.horizontal, 12).frame(height: UI.b)
-            .background { if on { Capsule().fill(.white).matchedGeometryEffect(id: "pill", in: ns) } }
-            .contentShape(Capsule())
+            Rectangle().fill(UI.hair).frame(width: 1, height: 30).padding(.horizontal, 6).enter(shown, 3)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(hint.0).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white.opacity(0.95))
+                Text(hint.1).font(.system(size: 10.5, weight: .medium)).foregroundStyle(.white.opacity(0.5))
+            }
+            .frame(width: 108, alignment: .leading)
+            .id(model.mode)
+            .transition(.asymmetric(insertion: .offset(y: 6).combined(with: .opacity), removal: .offset(y: -6).combined(with: .opacity)))
+            .animation(.spring(response: 0.28, dampingFraction: 0.8), value: model.mode)
+            .clipped()
+            .enter(shown, 4)
+            CloseButton { model.onCancel?() }.enter(shown, 5)
         }
-        .buttonStyle(Press()).help("\(title) (\(key))")
+        .padding(.leading, 8).padding(.trailing, 10)
+        .onAppear(perform: replay)
+        .onChange(of: model.appearTick) { replay() }
+    }
+
+    private func replay() {
+        guard !BarView.flatBackground else { return }
+        var t = Transaction(); t.disablesAnimations = true
+        withTransaction(t) { shown = false }
+        DispatchQueue.main.async { shown = true }
+    }
+
+    private var hint: (String, String) {
+        switch model.mode {
+        case .window: ("Click a window", "Hover to preview")
+        case .area: ("Drag an area", "⏎  reuse last area")
+        case .screen: ("Click a screen", "⏎  this screen")
+        }
+    }
+}
+
+/// A capture-mode tile: icon over label. The selected one sits on a spinning aurora pill that glows in its colors.
+private struct ModeTile: View {
+    @ObservedObject var model: BarModel
+    let mode: CaptureMode, title: String, symbol: String, key: String
+    let ns: Namespace.ID
+    @State private var hover = false
+
+    var body: some View {
+        let on = model.mode == mode
+        let shape = RoundedRectangle(cornerRadius: 15, style: .continuous)
+        Button { withAnimation(.spring(response: 0.34, dampingFraction: 0.74)) { model.onMode?(mode) } } label: {
+            VStack(spacing: 4) {
+                Image(systemName: symbol)
+                    .font(.system(size: 18, weight: on ? .semibold : .regular))
+                    .foregroundStyle(on ? UI.go : .white.opacity(hover ? 0.95 : 0.72))
+                    .shadow(color: UI.go.opacity(on ? 0.6 : 0), radius: 6)
+                    .symbolEffect(.bounce.up.byLayer, value: on)
+                    .frame(height: 21)
+                Text(title).font(.system(size: 11, weight: .semibold)).tracking(-0.1)
+            }
+            .foregroundStyle(.white.opacity(on ? 1 : hover ? 0.95 : 0.72))
+            .frame(width: 72, height: 50)
+            .overlay(alignment: .topTrailing) {
+                Text(key).font(UI.mono(8.5, .bold)).foregroundStyle(on ? UI.go.opacity(0.8) : .white.opacity(0.35)).padding(.top, 5).padding(.trailing, 7)
+            }
+            .scaleEffect(hover && !on ? 1.04 : 1)
+            .background {
+                if on {
+                    GraphitePill(radius: 15)
+                    .matchedGeometryEffect(id: "pill", in: ns)
+                } else {
+                    shape.fill(.white.opacity(hover ? 0.09 : 0.04))
+                        .overlay(shape.strokeBorder(.white.opacity(hover ? 0.16 : 0.06), lineWidth: 0.75))
+                }
+            }
+            .contentShape(shape)
+            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: hover)
+        }
+        .buttonStyle(Press()).onHover { hover = $0 }.help("\(title) (\(key))")
+    }
+}
+
+/// Selected state shared by mode tiles and tools: a graphite pill with a glowing green "active" LED at the bottom.
+private struct GraphitePill: View {
+    let radius: CGFloat
+    var led: CGFloat = 18
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+        ZStack {
+            shape.fill(LinearGradient(colors: [Color(white: 0.25), Color(white: 0.12)], startPoint: .top, endPoint: .bottom))
+                .shadow(color: UI.go.opacity(0.28), radius: 12, y: 4)
+                .shadow(color: .black.opacity(0.5), radius: 2, y: 1)
+            shape.strokeBorder(LinearGradient(colors: [.white.opacity(0.26), .white.opacity(0.04)], startPoint: .top, endPoint: .bottom), lineWidth: 1)
+            Capsule().fill(UI.go).frame(width: led, height: led < 12 ? 2 : 2.5)
+                .shadow(color: UI.go, radius: 4).shadow(color: UI.go.opacity(0.6), radius: 9)
+                .frame(maxHeight: .infinity, alignment: .bottom).padding(.bottom, led < 12 ? 2.5 : 3)
+        }
+    }
+}
+
+private struct CloseButton: View {
+    let action: () -> Void
+    @State private var hover = false
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "xmark").font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.white.opacity(hover ? 1 : 0.7))
+                .rotationEffect(.degrees(hover ? 90 : 0))
+                .frame(width: 30, height: 30)
+                .background(Circle().fill(.white.opacity(hover ? 0.16 : 0.07)))
+                .overlay(Circle().strokeBorder(.white.opacity(0.1), lineWidth: 0.75))
+                .contentShape(Circle())
+                .animation(.spring(response: 0.3, dampingFraction: 0.6), value: hover)
+        }
+        .buttonStyle(Press()).onHover { hover = $0 }.help("Cancel (Esc)")
+    }
+}
+
+private extension View {
+    /// Staggered entrance: rises, sharpens and scales in; item `i` starts 35 ms after the previous one.
+    func enter(_ shown: Bool, _ i: Int) -> some View {
+        self.opacity(shown ? 1 : 0)
+            .scaleEffect(shown ? 1 : 0.6)
+            .offset(y: shown ? 0 : 14)
+            .blur(radius: shown ? 0 : 5)
+            .animation(shown ? .spring(response: 0.34, dampingFraction: 0.66).delay(0.06 + Double(i) * 0.04) : nil, value: shown)
     }
 }
 
@@ -186,32 +330,28 @@ private struct SessionRow: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            // Recording: dot + live waveform + timer. Hover shows the target's name.
-            HStack(spacing: 8) {
+            // Recording: dot + live waveform + timer in a dark inset. Hover shows the target's name.
+            HStack(spacing: 9) {
                 Pulse()
                 Wave(meter: model.meter)
                 if let start = model.startedAt {
                     TimelineView(.periodic(from: start, by: 1)) { ctx in
-                        Text(BarView.clock(ctx.date.timeIntervalSince(start))).font(UI.mono(11.5, .semibold)).foregroundStyle(UI.ink).fixedSize()
+                        Text(BarView.clock(ctx.date.timeIntervalSince(start))).font(UI.mono(12.5, .semibold)).foregroundStyle(UI.ink).fixedSize()
                     }
                 }
             }
-            .padding(.leading, 13).padding(.trailing, 6)
+            .padding(.horizontal, 12).frame(height: UI.b)
+            .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(.black.opacity(0.4))
+                .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(.white.opacity(0.07), lineWidth: 0.75)))
+            .padding(.leading, 8).padding(.trailing, 6)
             .help("Recording · \(target.label)")
 
             Hair()
 
-            // Tools: a white pill slides under the selected one.
-            HStack(spacing: 1) {
+            // Tools: a graphite pill with a green LED slides under the selected one.
+            HStack(spacing: 2) {
                 ForEach(Self.tools, id: \.1) { t, symbol, help in
-                    let on = model.tool == t
-                    Button { withAnimation(UI.spring) { model.onTool?(t) } } label: {
-                        Image(systemName: symbol).font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(on ? Color.black : UI.soft)
-                            .frame(width: UI.b, height: UI.b)
-                            .background { if on { Capsule().fill(.white).matchedGeometryEffect(id: "tool", in: ns) } }                            .contentShape(Capsule())
-                    }
-                    .buttonStyle(Press()).help(help)
+                    ToolButton(on: model.tool == t, symbol: symbol, help: help, ns: ns) { model.onTool?(t) }
                 }
             }
             .padding(.horizontal, 4)
@@ -230,8 +370,33 @@ private struct SessionRow: View {
             }
             .padding(.horizontal, 4)
 
-            Finish { model.onFinish?() }.padding(.trailing, 5).padding(.leading, 2)
+            Finish { model.onFinish?() }.padding(.trailing, 8).padding(.leading, 4)
         }
+    }
+}
+
+private struct ToolButton: View {
+    let on: Bool, symbol: String, help: String
+    let ns: Namespace.ID
+    let action: () -> Void
+    @State private var hover = false
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 11, style: .continuous)
+        Button { withAnimation(.spring(response: 0.3, dampingFraction: 0.74)) { action() } } label: {
+            Image(systemName: symbol).font(.system(size: 14, weight: on ? .semibold : .medium))
+                .foregroundStyle(on ? UI.go : .white.opacity(hover ? 0.95 : 0.7))
+                .shadow(color: UI.go.opacity(on ? 0.6 : 0), radius: 5)
+                .symbolEffect(.bounce, value: on)
+                .offset(y: on ? -1.5 : 0)
+                .frame(width: UI.b, height: UI.b)
+                .background {
+                    if on { GraphitePill(radius: 11, led: 10).matchedGeometryEffect(id: "tool", in: ns) }
+                    else { shape.fill(.white.opacity(hover ? 0.09 : 0)) }
+                }
+                .contentShape(shape)
+                .animation(.easeOut(duration: 0.14), value: hover)
+        }
+        .buttonStyle(Press()).onHover { hover = $0 }.help(help)
     }
 }
 
@@ -333,6 +498,7 @@ private struct Palette: View {
 
     private func set(_ v: Bool) {
         closer?.cancel(); closer = nil
+        if v, !model.paletteOpen { Sfx.palette() }
         model.paletteOpen = v
     }
 
@@ -459,15 +625,17 @@ private struct Press: ButtonStyle {
 }
 
 private struct Round: View {
-    let symbol: String, help: String, action: () -> Void
+    let symbol: String, help: String
+    var bright = false
+    let action: () -> Void
     @State private var hover = false
     var body: some View {
         Button(action: action) {
-            Image(systemName: symbol).font(.system(size: 12, weight: .medium))
-                .foregroundStyle(hover ? UI.ink : UI.soft)
+            Image(systemName: symbol).font(.system(size: 14, weight: bright ? .semibold : .medium))
+                .foregroundStyle(hover ? UI.ink : bright ? .white.opacity(0.85) : UI.soft)
                 .frame(width: UI.b, height: UI.b)
-                .background(Circle().fill(.white.opacity(hover ? 0.1 : 0)))
-                .contentShape(Circle())
+                .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(.white.opacity(hover ? 0.09 : 0)))
+                .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
                 .animation(.easeOut(duration: 0.12), value: hover)
         }
         .buttonStyle(Press()).onHover { hover = $0 }.help(help)
@@ -479,16 +647,21 @@ private struct Finish: View {
     @State private var hover = false
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 7) {
-                Text("Finish").font(.system(size: 12, weight: .semibold)).tracking(-0.2)
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark").font(.system(size: 11, weight: .heavy))
+                Text("Finish").font(.system(size: 12.5, weight: .bold)).tracking(-0.2)
             }
-            .foregroundStyle(.black)
-            .padding(.horizontal, 13).frame(height: UI.b)
-            .background(Capsule().fill(.white))
-            .overlay(Capsule().fill(.white.opacity(hover ? 0.0 : 0)))
-            .shadow(color: .white.opacity(hover ? 0.25 : 0), radius: 4)
-            .contentShape(Capsule())
-            .animation(.easeOut(duration: 0.15), value: hover)
+            .foregroundStyle(Color(red: 0.04, green: 0.16, blue: 0.05))
+            .padding(.horizontal, 15).frame(height: UI.b)
+            .background(
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .fill(LinearGradient(colors: [Color(red: 0.68, green: 1, blue: 0.62), UI.go], startPoint: .top, endPoint: .bottom))
+            )
+            .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(.white.opacity(0.45), lineWidth: 0.75))
+            .shadow(color: UI.go.opacity(hover ? 0.6 : 0.35), radius: hover ? 12 : 8)
+            .scaleEffect(hover ? 1.03 : 1)
+            .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: hover)
         }
         .buttonStyle(Press()).onHover { hover = $0 }.help("Finish and copy the prompt to the clipboard (⌥⇧R)")
     }
@@ -561,8 +734,8 @@ private struct Shutter: View {
     var body: some View {
         Button { model.onSnapshot?() } label: {
             ZStack {
-                Circle().strokeBorder(.white.opacity(hover ? 1 : 0.85), lineWidth: 1.75).frame(width: 22, height: 22)
-                Circle().fill(.white).frame(width: 15, height: 15)
+                Circle().strokeBorder(.white.opacity(hover ? 1 : 0.85), lineWidth: 2).frame(width: 26, height: 26)
+                Circle().fill(.white).frame(width: 18, height: 18)
                     .scaleEffect(snap ? 0.45 : (hover ? 1.06 : 1))
                     .opacity(snap ? 0.6 : 1)
             }

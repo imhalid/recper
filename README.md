@@ -13,12 +13,13 @@ It is not a screen recorder: no video, no audio files. Just text, numbered marks
 
 - **Pick a target**: window, area or full screen (`⌥⇧R`). Everything outside the target is dimmed.
 - **On-device dictation** with Apple's `SpeechAnalyzer` / `DictationTranscriber`; live text while you talk.
-- **Draw** with pen, box, ellipse, arrow and blur in 6 colors. Blur is applied permanently before anything is saved.
+- **Draw & edit** with pen, box, ellipse, arrow and blur in 6 colors. Click any box, ellipse, arrow or blur region while on screen to move, resize, or delete (`⌫`) it. Blur is applied permanently before anything is saved.
+- **Circle gesture**: in cursor mode, move the mouse in a closed circle around something (without clicking) to drop a numbered ellipse mark automatically (configurable in Settings).
 - **Numbered marks**: every mark gets a `#n` badge, and the UI element under it is looked up via Accessibility
   (role, title, identifier).
 - **Screenshots** with a shutter: `Space` / `T` / `⏎` while drawing, `⌥⇧S` anywhere, or the button in the bar.
 - **Voice commands**: "take screenshot", "undo", "finish".
-- **Review screen** before sending (optional).
+- **Review screen** before sending (optional): edit sentences, click screenshots to inspect them large, or remove unneeded items (`⌘⏎` sends, `Esc` saves without copying).
 - **Output**: `feedback.md` checklist + `session.json` + `shots/*.png`, and a ready-to-paste prompt on the clipboard.
 - **MCP server** (`Recper --mcp`) so agents can read feedback, check off items, and ask you for feedback themselves.
 
@@ -63,10 +64,14 @@ survive rebuilds.
 | `P` `B` `O` `A` `X` | Pen, box, ellipse, arrow, blur |
 | `1`–`6` | Ink color (while drawing) |
 | `Space` / `T` / `⏎` | Take a screenshot (while drawing) |
-| `⌘Z` | Undo the last mark |
-| `Esc` | Back to the cursor (clicks go to the app underneath) |
-| `⌥⇧S` | Take a screenshot from anywhere |
+| `⌘Z` | Undo the last mark, edit, deletion, or screenshot |
+| `⌫` / `Delete` | Remove the selected mark |
+| `Esc` | Deselect a selected mark; otherwise back to the cursor (clicks go to the app underneath) |
+| Click & drag a mark | Select a box, ellipse, arrow, or blur region to move its body or drag edges/corners/endpoints to resize (works while drawing and in cursor mode when hovering a mark) |
+| Circle with mouse | In cursor mode (without clicking), loop around a region to drop a numbered ellipse mark |
+| `⌥⇧S` | During a session, from any app: opens a radial menu at the pointer; click pen, box, arrow, finish, undo or blur, or the center for a screenshot. Click outside, Esc or `⌥⇧S` closes it |
 | `⌥⇧V` `P` `B` `O` `A` `X` `S` `Z` | During a session, from any app: cursor, pen, box, ellipse, arrow, blur, screenshot, undo |
+| `⌘⏎` / `Esc` (Review) | Send (save & copy prompt) / save without copying; click any thumbnail to inspect it large |
 
 ## Output
 

@@ -1,4 +1,5 @@
 @preconcurrency import AVFoundation
+import CoreAudio
 import Foundation
 import Speech
 import RecperCore
@@ -46,10 +47,9 @@ final class Transcriber: @unchecked Sendable {
                              "logo", "icon", "font", "layout", "scroll", "hover", "tooltip", "toggle", "input", "placeholder",
                              "border", "radius", "shadow", "gap", "grid", "flex", "card", "tab", "toast", "badge", "spinner"]
 
-    static func chooseLocale() async -> Locale {
-        let supported = Set(await DictationTranscriber.supportedLocales.map { $0.identifier(.bcp47) })
-        // Manual override: `defaults write dev.halid.recper dictationLocale tr-TR`
-        if let forced = UserDefaults.standard.string(forKey: "dictationLocale"), supported.contains(forced) { return Locale(identifier: forced) }
+    static let localeKey = "dictationLocale"
+
+    static func automaticLocale(from supported: Set<String>) -> Locale {
         // Exact match first (e.g. en-TR isn't supported, but tr-TR is if it's in the list), then language prefix.
         if let exact = Locale.preferredLanguages.first(where: supported.contains) { return Locale(identifier: exact) }
         for id in Locale.preferredLanguages {
@@ -58,9 +58,21 @@ final class Transcriber: @unchecked Sendable {
         return Locale(identifier: supported.contains("tr-TR") ? "tr-TR" : "en-US")
     }
 
+    static func chooseLocale() async -> Locale {
+        let supported = Set(await DictationTranscriber.supportedLocales.map { $0.identifier(.bcp47) })
+        // Manual override: stored in Settings or `defaults write dev.halid.recper dictationLocale tr-TR`
+        if let forced = UserDefaults.standard.string(forKey: localeKey), !forced.isEmpty, supported.contains(forced) {
+            return Locale(identifier: forced)
+        }
+        return automaticLocale(from: supported)
+    }
+
     /// If `file` is given, it is fed instead of the microphone (testing: `Recper --transcribe <file>`).
     func start(sessionStart: Date, file: URL? = nil) async throws {
         self.sessionStart = sessionStart
+        if file == nil, !Self.hasInputDevice() {
+            throw NSError(domain: "recper", code: 4, userInfo: [NSLocalizedDescriptionKey: "No microphone found"])
+        }
         let micOK = file != nil ? true : await AVCaptureDevice.requestAccess(for: .audio)
         guard micOK else {
             throw NSError(domain: "recper", code: 1, userInfo: [NSLocalizedDescriptionKey: "No microphone permission"])
@@ -118,9 +130,15 @@ final class Transcriber: @unchecked Sendable {
     // silently stops. On a change notification, or if no buffer arrives for 1.5 s, the engine is rebuilt; dictation continues.
 
     private func startMic() throws {
+        // With no input device (e.g. a Mac mini without a mic) installTap raises an Objective-C exception that
+        // Swift can't catch and the app aborts. Check the device and the hardware format first.
+        guard Self.hasInputDevice() else {
+            throw NSError(domain: "recper", code: 4, userInfo: [NSLocalizedDescriptionKey: "No microphone found"])
+        }
         let input = engine.inputNode
+        let hw = input.inputFormat(forBus: 0)
         let fmt = input.outputFormat(forBus: 0)
-        guard fmt.sampleRate > 0, fmt.channelCount > 0 else {
+        guard hw.sampleRate > 0, hw.channelCount > 0, fmt.sampleRate > 0, fmt.channelCount > 0 else {
             throw NSError(domain: "recper", code: 4, userInfo: [NSLocalizedDescriptionKey: "No microphone found"])
         }
         if natural != fmt, let target = format {
@@ -135,6 +153,20 @@ final class Transcriber: @unchecked Sendable {
         configObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) { [weak self] _ in
             self?.restartMic(reason: "audio device changed")
         }
+    }
+
+    /// True if the system has a default input device with at least one input channel.
+    static func hasInputDevice() -> Bool {
+        var dev = AudioDeviceID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice,
+                                              mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &dev) == noErr,
+              dev != kAudioObjectUnknown else { return false }
+        addr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreams, mScope: kAudioDevicePropertyScopeInput,
+                                          mElement: kAudioObjectPropertyElementMain)
+        size = 0
+        return AudioObjectGetPropertyDataSize(dev, &addr, 0, nil, &size) == noErr && size > 0
     }
 
     private let micQueue = DispatchQueue(label: "recper.mic")

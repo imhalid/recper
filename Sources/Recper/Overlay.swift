@@ -22,8 +22,21 @@ final class OverlayModel {
     var color: InkColor = .red
     /// Strokes to show on screen.
     var strokes: () -> [LiveStroke] = { [] }
-    /// Blurred regions (global coordinates).
-    var blurs: () -> [CGRect] = { [] }
+    /// Blurred regions (global coordinates, editable LiveStrokes).
+    var blurs: () -> [LiveStroke] = { [] }
+    /// Currently selected editable mark (shows resize/move handles).
+    var selectedMarkID: UUID? { didSet { if oldValue != selectedMarkID { changed() } } }
+    /// Editable mark currently under the pointer (shows subtle grabbable highlight).
+    var hoveredMarkID: UUID? { didSet { if oldValue != hoveredMarkID { changed() } } }
+    /// Handle under the pointer when hovering a mark.
+    var hoveredHandle: MarkHandle?
+
+    /// All currently editable marks (blurs underneath ink marks, matching visual z-order).
+    var editableMarks: [EditableMark] {
+        blurs().map { EditableMark(id: $0.id, tool: $0.tool, points: $0.points) }
+            + strokes().filter { $0.tool != .pen && $0.tool != .blur }
+                .map { EditableMark(id: $0.id, tool: $0.tool, points: $0.points) }
+    }
 
     var onChange: (() -> Void)?
     func changed() { onChange?() }
@@ -44,7 +57,7 @@ final class OverlayWindow: NSPanel {
         sharingType = .none
         setFrame(screen.frame, display: false)
     }
-    /// Takes keyboard focus only while choosing; during a session it doesn't steal typing from the user's app.
+    /// Takes keyboard focus while choosing, drawing, or editing a selected mark.
     var keyable = true
     override var canBecomeKey: Bool { keyable }
 }
@@ -58,12 +71,31 @@ final class OverlayView: NSView {
     var onHover: ((CGPoint) -> Void)?
     /// Drawing in a session: begin / move / end (global coordinates, clamped to the target).
     var onStroke: ((StrokePhase, CGPoint) -> Void)?
+    /// Mark editing callbacks.
+    var onSelectMark: ((UUID?) -> Void)?
+    var onHoverMark: ((MarkHit?) -> Void)?
+    var onMoveMark: ((UUID, [CGPoint]) -> Void)?
+    var onCommitMarkEdit: ((UUID, [CGPoint]) -> Void)?
+    var onMarkDragChange: ((Bool) -> Void)?
+
     var screenName = ""
     var displayID: UInt32 = 0
     /// In Window mode, the window under the mouse (set by the controller).
     var pickedWindow: WindowInfo?
 
     enum StrokePhase { case begin, move, end }
+
+    private struct MarkDrag {
+        var mark: EditableMark
+        var handle: MarkHandle
+        var startPoint: CGPoint
+        var moved = false
+    }
+
+    private var drawing = false
+    private var markDrag: MarkDrag?
+    /// Deferred draw-begin when a click on empty space first deselects a mark (avoids stray grab/drop sounds).
+    private var pendingDrawStart: CGPoint?
 
     init(model: OverlayModel, screenFrame: CGRect) {
         self.model = model
@@ -86,9 +118,38 @@ final class OverlayView: NSView {
     override func cursorUpdate(with event: NSEvent) {
         switch model.phase {
         case .choosing(.area): NSCursor.crosshair.set()
-        case .session where model.tool != nil: Cursors.cursor(model.tool!, model.color).set()
+        case .session:
+            if let drag = markDrag {
+                Self.cursor(for: MarkHit(id: drag.mark.id, handle: drag.handle), dragging: true, tool: model.tool, color: model.color).set()
+            } else if let id = model.hoveredMarkID, let h = model.hoveredHandle {
+                Self.cursor(for: MarkHit(id: id, handle: h), dragging: false, tool: model.tool, color: model.color).set()
+            } else if let t = model.tool {
+                Cursors.cursor(t, model.color).set()
+            } else {
+                NSCursor.arrow.set()
+            }
         default: NSCursor.arrow.set()
         }
+    }
+
+    /// Resolves the appropriate cursor for mark hover/drag handles or active drawing tool.
+    static func cursor(for hit: MarkHit?, dragging: Bool, tool: Tool?, color: InkColor) -> NSCursor {
+        if let hit {
+            switch hit.handle {
+            case .body: return dragging ? .closedHand : .openHand
+            case .start, .end: return dragging ? .closedHand : .crosshair
+            case .left: return .frameResize(position: .left, directions: .all)
+            case .right: return .frameResize(position: .right, directions: .all)
+            case .top: return .frameResize(position: .top, directions: .all)
+            case .bottom: return .frameResize(position: .bottom, directions: .all)
+            case .topLeft: return .frameResize(position: .topLeft, directions: .all)
+            case .topRight: return .frameResize(position: .topRight, directions: .all)
+            case .bottomLeft: return .frameResize(position: .bottomLeft, directions: .all)
+            case .bottomRight: return .frameResize(position: .bottomRight, directions: .all)
+            }
+        }
+        if let tool { return Cursors.cursor(tool, color) }
+        return .arrow
     }
 
     private func global(_ e: NSEvent) -> CGPoint {
@@ -102,17 +163,42 @@ final class OverlayView: NSView {
 
     // MARK: Mouse
 
-    override func mouseMoved(with e: NSEvent) { onHover?(global(e)) }
-
-    private var drawing = false
+    override func mouseMoved(with e: NSEvent) {
+        let p = global(e)
+        if case .session = model.phase {
+            let hit = MarkGeometry.hitTest(point: p, marks: model.editableMarks, selectedID: model.selectedMarkID)
+            onHoverMark?(hit)
+            Self.cursor(for: hit, dragging: false, tool: model.tool, color: model.color).set()
+            return
+        }
+        onHover?(p)
+    }
 
     override func mouseDown(with e: NSEvent) {
         let p = global(e)
         switch model.phase {
         case .session(let t):
+            // 1. Check editable marks & selection handles first (works in both drawing and cursor mode).
+            if let hit = MarkGeometry.hitTest(point: p, marks: model.editableMarks, selectedID: model.selectedMarkID),
+               let mark = model.editableMarks.first(where: { $0.id == hit.id }) {
+                onSelectMark?(hit.id)
+                markDrag = MarkDrag(mark: mark, handle: hit.handle, startPoint: p)
+                onMarkDragChange?(true)
+                Self.cursor(for: hit, dragging: true, tool: model.tool, color: model.color).set()
+                return
+            }
+
+            // 2. Clicked outside any editable mark: deselect if needed, then draw if a tool is active.
+            let hadSelection = (model.selectedMarkID != nil)
+            if hadSelection { onSelectMark?(nil) }
+
             guard model.tool != nil, t.frame.contains(p) else { return }
-            drawing = true
-            onStroke?(.begin, p)
+            if hadSelection {
+                pendingDrawStart = p
+            } else {
+                drawing = true
+                onStroke?(.begin, p)
+            }
         case .choosing(.area):
             model.drag = (p, screenFrame, CGRect(origin: p, size: .zero))
         case .choosing(.window):
@@ -124,21 +210,62 @@ final class OverlayView: NSView {
     }
 
     override func mouseDragged(with e: NSEvent) {
-        if drawing, case .session(let t) = model.phase { onStroke?(.move, clamped(global(e), to: t.frame)); return }
+        let p = global(e)
+        if var drag = markDrag, case .session(let t) = model.phase {
+            if !drag.moved {
+                guard hypot(p.x - drag.startPoint.x, p.y - drag.startPoint.y) >= 2.5 else { return }
+                drag.moved = true
+                Sfx.grab()
+            }
+            markDrag = drag
+            let next = MarkGeometry.resize(mark: drag.mark, handle: drag.handle, from: drag.startPoint, to: p, within: t.frame)
+            onMoveMark?(drag.mark.id, next)
+            Self.cursor(for: MarkHit(id: drag.mark.id, handle: drag.handle), dragging: true, tool: model.tool, color: model.color).set()
+            return
+        }
+        if let start = pendingDrawStart, case .session(let t) = model.phase {
+            if hypot(p.x - start.x, p.y - start.y) >= 4 {
+                pendingDrawStart = nil
+                drawing = true
+                onStroke?(.begin, start)
+                onStroke?(.move, clamped(p, to: t.frame))
+            }
+            return
+        }
+        if drawing, case .session(let t) = model.phase { onStroke?(.move, clamped(p, to: t.frame)); return }
         guard let d = model.drag else { return }
-        model.drag = (d.start, d.screen, Geometry.dragRect(from: d.start, to: global(e), within: d.screen))
+        model.drag = (d.start, d.screen, Geometry.dragRect(from: d.start, to: p, within: d.screen))
     }
 
     override func mouseUp(with e: NSEvent) {
+        let p = global(e)
+        if let drag = markDrag, case .session(let t) = model.phase {
+            markDrag = nil
+            onMarkDragChange?(false)
+            if drag.moved {
+                let next = MarkGeometry.resize(mark: drag.mark, handle: drag.handle, from: drag.startPoint, to: p, within: t.frame)
+                onMoveMark?(drag.mark.id, next)
+                onCommitMarkEdit?(drag.mark.id, drag.mark.points)
+                Sfx.drop()
+            }
+            let hit = MarkGeometry.hitTest(point: p, marks: model.editableMarks, selectedID: model.selectedMarkID)
+            onHoverMark?(hit)
+            Self.cursor(for: hit, dragging: false, tool: model.tool, color: model.color).set()
+            return
+        }
+        if pendingDrawStart != nil {
+            pendingDrawStart = nil
+            return
+        }
         if drawing, case .session(let t) = model.phase {
             drawing = false
-            onStroke?(.move, clamped(global(e), to: t.frame))
+            onStroke?(.move, clamped(p, to: t.frame))
             onStroke?(.end, .zero)
             return
         }
         guard let d = model.drag else { return }
         model.drag = nil
-        let r = Geometry.dragRect(from: d.start, to: global(e), within: d.screen)
+        let r = Geometry.dragRect(from: d.start, to: p, within: d.screen)
         if Geometry.isUsableArea(r) {
             onPick?(.area(frame: r))
         } else if let last = model.lastArea, last.contains(d.start) {
@@ -150,15 +277,17 @@ final class OverlayView: NSView {
 
     /// Shortcuts like ⌘Z arrive here instead of keyDown.
     override func performKeyEquivalent(with e: NSEvent) -> Bool {
-        guard case .session = model.phase, e.modifierFlags.contains(.command), e.charactersIgnoringModifiers == "z" else { return false }
+        guard case .session = model.phase, e.modifierFlags.contains(.command), e.charactersIgnoringModifiers?.lowercased() == "z" else { return false }
         onKey?(e)
         return true
     }
 
     // MARK: Drawing (layers)
     //
-    // Redrawing the full screen on every mouse move stuttered. Now the dim overlay, border, label
-    // and ink are separate layers; on change only their paths update and the GPU composites.
+    // Redrawing the full screen on every mouse move stuttered. Now the dim overlay, border, label,
+    // ink, and editing handles are separate layers; on change only their paths update and the GPU composites.
+
+    private static let selectionAccent = CGColor(srgbRed: 0.24, green: 0.58, blue: 1.0, alpha: 1.0)
 
     private let dimLayer = CAShapeLayer()
     private let borderLayer = CAShapeLayer()
@@ -166,17 +295,28 @@ final class OverlayView: NSView {
     private let inkLayer = CALayer()
     private let inkMask = CAShapeLayer()
     private var inkLayers: [InkColor: CAShapeLayer] = [:]
-    /// Mark numbers (badges), keyed by the stroke's `t`.
+    /// Mark numbers (badges), keyed by the stroke's unique `id`.
     private let numbersLayer = CALayer()
     private let numbersMask = CAShapeLayer()
-    private var numberCache: [Double: CALayer] = [:]
-    /// Blurred regions appear on screen as frosted, hatched boxes (the actual pixelation happens in the screenshot).
+    private var numberCache: [UUID: CALayer] = [:]
+    /// Blurred regions appear on screen only as their outline (dark halo + white dashes) with a small tag: what's under them
+    /// stays readable for the user; the pixelation happens in the screenshot only.
     private let blurLayer = CAShapeLayer()
+    private let blurHalo = CAShapeLayer()
+    private let blurTags = CALayer()
+    private var blurTagPool: [CALayer] = []
     private let blurMask = CAShapeLayer()
+    /// Hover highlight + selection outline & interactive resize handles.
+    private let editLayer = CALayer()
+    private let hoverHaloLayer = CAShapeLayer()
+    private let hoverLayer = CAShapeLayer()
+    private let selectionHaloLayer = CAShapeLayer()
+    private let selectionLayer = CAShapeLayer()
+    private var handleLayers: [CALayer] = []
     private let badgeLayer = CALayer()
     private let badgeText = CATextLayer()
-    /// Stroke path cache: not recomputed unless the stroke changes (point count).
-    private var inkCache: [Double: (count: Int, path: CGPath)] = [:]
+    /// Stroke path cache: not recomputed unless the stroke changes (point count for pen).
+    private var inkCache: [UUID: (count: Int, path: CGPath)] = [:]
 
     func setUpLayers() {
         let root = CALayer()
@@ -192,29 +332,115 @@ final class OverlayView: NSView {
             inkLayer.addSublayer(l)
             inkLayers[c] = l
         }
-        blurLayer.fillColor = NSColor(white: 0.82, alpha: 0.93).cgColor
-        blurLayer.strokeColor = NSColor(white: 0.35, alpha: 0.9).cgColor
-        blurLayer.lineWidth = 1
-        blurLayer.lineDashPattern = [5, 4]
+        blurHalo.fillColor = NSColor(white: 1, alpha: 0.04).cgColor
+        blurHalo.strokeColor = NSColor(white: 0, alpha: 0.55).cgColor
+        blurHalo.lineWidth = 3.5
+        blurLayer.fillColor = nil
+        blurLayer.strokeColor = NSColor.white.cgColor
+        blurLayer.lineWidth = 1.5
+        blurLayer.lineDashPattern = [6, 4]
+        blurLayer.addSublayer(blurHalo)
+        blurLayer.addSublayer(blurTags)
         blurLayer.mask = blurMask
+
+        hoverHaloLayer.fillColor = nil
+        hoverHaloLayer.strokeColor = NSColor.black.withAlphaComponent(0.35).cgColor
+        hoverHaloLayer.lineWidth = 4.0
+        hoverHaloLayer.lineCap = .round
+        hoverHaloLayer.lineJoin = .round
+        hoverLayer.fillColor = nil
+        hoverLayer.strokeColor = NSColor.white.withAlphaComponent(0.85).cgColor
+        hoverLayer.lineWidth = 1.6
+        hoverLayer.lineCap = .round
+        hoverLayer.lineJoin = .round
+
+        selectionHaloLayer.fillColor = nil
+        selectionHaloLayer.strokeColor = NSColor.black.withAlphaComponent(0.40).cgColor
+        selectionHaloLayer.lineWidth = 3.2
+        selectionHaloLayer.lineCap = .round
+        selectionHaloLayer.lineJoin = .round
+        selectionLayer.fillColor = nil
+        selectionLayer.strokeColor = Self.selectionAccent
+        selectionLayer.lineWidth = 1.5
+        selectionLayer.lineCap = .round
+        selectionLayer.lineJoin = .round
+
+        for l in [hoverHaloLayer, hoverLayer, selectionHaloLayer, selectionLayer] {
+            l.frame = bounds
+            editLayer.addSublayer(l)
+        }
+
         badgeLayer.backgroundColor = NSColor.black.withAlphaComponent(0.75).cgColor
         badgeText.foregroundColor = NSColor.white.cgColor
         badgeText.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
         badgeText.fontSize = 12
         badgeLayer.addSublayer(badgeText)
         numbersLayer.mask = numbersMask
-        for l in [dimLayer, blurLayer, inkLayer, numbersLayer, borderLayer, badgeLayer] as [CALayer] {
+        for l in [dimLayer, blurLayer, inkLayer, numbersLayer, borderLayer, editLayer, badgeLayer] as [CALayer] {
             l.frame = bounds
             root.addSublayer(l)
         }
         inkMask.frame = bounds
         numbersMask.frame = bounds
         blurMask.frame = bounds
+        blurHalo.frame = bounds
+        blurTags.frame = bounds
+        blurHalo.zPosition = -1
+    }
+
+    private func handleLayer(_ i: Int) -> CALayer {
+        while handleLayers.count <= i {
+            let h = CALayer()
+            h.backgroundColor = CGColor.white
+            h.borderColor = Self.selectionAccent
+            h.borderWidth = 1.6
+            h.shadowColor = CGColor.black
+            h.shadowOpacity = 0.35
+            h.shadowRadius = 2
+            h.shadowOffset = CGSize(width: 0, height: -0.5)
+            h.contentsScale = window?.backingScaleFactor ?? 2
+            editLayer.addSublayer(h)
+            handleLayers.append(h)
+        }
+        return handleLayers[i]
+    }
+
+    /// A small "eye.slash Blurred" pill at the top-left inside a blur region.
+    private func blurTag(_ i: Int) -> CALayer {
+        while blurTagPool.count <= i {
+            let pill = CALayer()
+            pill.backgroundColor = NSColor.black.withAlphaComponent(0.72).cgColor
+            pill.borderColor = NSColor.white.withAlphaComponent(0.25).cgColor
+            pill.borderWidth = 0.5
+            let scale = window?.backingScaleFactor ?? 2
+            let icon = CALayer()
+            if let img = NSImage(systemSymbolName: "eye.slash.fill", accessibilityDescription: nil)?
+                .withSymbolConfiguration(.init(pointSize: 9, weight: .semibold).applying(.init(paletteColors: [.white]))) {
+                icon.contents = img.layerContents(forContentsScale: scale)
+                icon.contentsScale = scale
+                icon.frame = CGRect(x: 7, y: 4, width: img.size.width, height: img.size.height)
+            }
+            let t = CATextLayer()
+            t.string = "Blurred in screenshot"
+            t.font = NSFont.systemFont(ofSize: 10, weight: .semibold)
+            t.fontSize = 10
+            t.foregroundColor = NSColor.white.cgColor
+            t.contentsScale = scale
+            t.frame = CGRect(x: 23, y: 3, width: 112, height: 14)
+            pill.addSublayer(icon); pill.addSublayer(t)
+            pill.bounds = CGRect(x: 0, y: 0, width: 133, height: 19)
+            pill.cornerRadius = 9.5
+            pill.anchorPoint = .zero
+            blurTags.addSublayer(pill)
+            blurTagPool.append(pill)
+        }
+        return blurTagPool[i]
     }
 
     override func viewDidChangeBackingProperties() {
         let s = window?.backingScaleFactor ?? 2
         [badgeLayer, badgeText].forEach { $0.contentsScale = s }
+        handleLayers.forEach { $0.contentsScale = s }
     }
 
     /// Number badge: ink-colored disc with a white rim + digit (same as in the screenshot).
@@ -250,6 +476,48 @@ final class OverlayView: NSView {
         l.shadowRadius = 1.2
         l.shadowOffset = CGSize(width: 0, height: -0.5)
         return l
+    }
+
+    /// Subtle short appear animation when a cursor-mode circle gesture creates an ellipse mark.
+    /// Self-removes on completion (zero ongoing CPU).
+    func animateGestureMark(_ stroke: LiveStroke) {
+        guard case .session(let t) = model.phase,
+              let hole = Geometry.hole(for: t.frame, onScreen: screenFrame),
+              let rect = MarkGeometry.rect(for: stroke.points),
+              let root = layer else { return }
+        let localRect = rect.offsetBy(dx: -screenFrame.minX, dy: -screenFrame.minY)
+        guard localRect.intersects(hole) else { return }
+
+        let ripple = CAShapeLayer()
+        let pad: CGFloat = 14
+        let containerRect = localRect.insetBy(dx: -pad, dy: -pad)
+        ripple.frame = containerRect
+        ripple.path = CGPath(ellipseIn: CGRect(x: pad, y: pad, width: localRect.width, height: localRect.height), transform: nil)
+        ripple.fillColor = nil
+        ripple.strokeColor = stroke.color.cg
+        ripple.lineWidth = 3.0
+        ripple.opacity = 0
+        root.insertSublayer(ripple, above: inkLayer)
+
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { ripple.removeFromSuperlayer() }
+
+        let scale = CABasicAnimation(keyPath: "transform.scale")
+        scale.fromValue = 0.88
+        scale.toValue = 1.12
+        scale.duration = 0.32
+        scale.timingFunction = CAMediaTimingFunction(name: .easeOut)
+
+        let opacity = CAKeyframeAnimation(keyPath: "opacity")
+        opacity.values = [0.0, 0.78, 0.0]
+        opacity.keyTimes = [0.0, 0.18, 1.0]
+        opacity.duration = 0.32
+
+        let group = CAAnimationGroup()
+        group.animations = [scale, opacity]
+        group.duration = 0.32
+        ripple.add(group, forKey: "gesturePop")
+        CATransaction.commit()
     }
 
     /// Captured strokes fade out quietly and slowly (no flash or sound, so the flow isn't interrupted).
@@ -323,14 +591,21 @@ final class OverlayView: NSView {
         // Dim overlay, except the hole.
         let dimPath = CGMutablePath()
         dimPath.addRect(bounds)
-        if let hole, !(hole == bounds && dim < 0.2) { dimPath.addRect(hole) }
+        // While choosing, the frame has softly rounded corners (the screenshot itself stays rectangular).
+        let corner: CGFloat = session || hole == bounds ? 0 : 10
+        if let hole, !(hole == bounds && dim < 0.2) {
+            let r = min(corner, hole.width / 2, hole.height / 2)
+            dimPath.addRoundedRect(in: hole, cornerWidth: r, cornerHeight: r)
+        }
         dimLayer.path = dimPath
         dimLayer.fillColor = NSColor.black.withAlphaComponent(dim).cgColor
 
         // Border.
         if let hole {
             let inset = session ? 0.75 : 1.5
-            borderLayer.path = CGPath(rect: hole.insetBy(dx: inset, dy: inset), transform: nil)
+            let b = hole.insetBy(dx: inset, dy: inset)
+            let r = max(0, min(corner - inset, b.width / 2, b.height / 2))
+            borderLayer.path = CGPath(roundedRect: b, cornerWidth: r, cornerHeight: r, transform: nil)
             borderLayer.strokeColor = NSColor.controlAccentColor.withAlphaComponent(session ? 0.9 : 1).cgColor
             borderLayer.lineWidth = session ? 1.5 : (ghost ? 2 : 3)
             borderLayer.lineDashPattern = ghost ? [8, 5] : nil
@@ -338,29 +613,30 @@ final class OverlayView: NSView {
             borderLayer.path = nil
         }
 
-        // Ink: clipped to the target; only changed strokes have their paths recomputed.
+        // Ink & Blurs & Edit Chrome.
         if session, let hole {
             let strokes = model.strokes()
+            let blurStrokes = model.blurs()
             let move = CGAffineTransform(translationX: -screenFrame.minX, y: -screenFrame.minY)
             var ink: [InkColor: CGMutablePath] = [:]
-            var alive = Set<Double>()
-            var badged = Set<Double>()
+            var alive = Set<UUID>()
+            var badged = Set<UUID>()
             var badgedN = Set<Int>()
             for s in strokes {
-                alive.insert(s.t)
+                alive.insert(s.id)
                 let path: CGPath
-                if let c = inkCache[s.t], c.count == s.points.count, s.tool == .pen {
+                if let c = inkCache[s.id], c.count == s.points.count, s.tool == .pen {
                     path = c.path
                 } else {
                     path = Capture.path(for: s)
-                    inkCache[s.t] = (s.points.count, path)
+                    inkCache[s.id] = (s.points.count, path)
                 }
                 if !path.isEmpty, let n = s.n, let c = Capture.badgeCenter(s), badgedN.insert(n).inserted {
-                    badged.insert(s.t)
-                    let b = numberCache[s.t] ?? {
+                    badged.insert(s.id)
+                    let b = numberCache[s.id] ?? {
                         let b = Self.makeNumber(n, s.color, scale: window?.backingScaleFactor ?? 2)
                         numbersLayer.addSublayer(b)
-                        numberCache[s.t] = b
+                        numberCache[s.id] = b
                         return b
                     }()
                     b.position = CGPoint(x: c.x - screenFrame.minX, y: c.y - screenFrame.minY)
@@ -370,8 +646,8 @@ final class OverlayView: NSView {
                 ink[s.color] = p
             }
             inkCache = inkCache.filter { alive.contains($0.key) }
-            for (t, b) in numberCache where !badged.contains(t) {
-                b.removeFromSuperlayer(); numberCache[t] = nil
+            for (id, b) in numberCache where !badged.contains(id) {
+                b.removeFromSuperlayer(); numberCache[id] = nil
             }
             numbersMask.path = CGPath(rect: hole, transform: nil)
             for (c, l) in inkLayers {
@@ -379,34 +655,42 @@ final class OverlayView: NSView {
                 l.shadowPath = ink[c]
             }
             inkMask.path = CGPath(rect: hole, transform: nil)
-            // Blurred regions: committed ones + the one being dragged.
-            var rects = model.blurs()
+
+            // Blurred regions: committed ones + any blur currently being dragged.
+            var rects = blurStrokes.compactMap { MarkGeometry.rect(for: $0.points) }
             for s in strokes where s.tool == .blur {
-                if let a = s.points.first, let b = s.points.last {
-                    rects.append(CGRect(x: min(a.x, b.x), y: min(a.y, b.y), width: abs(b.x - a.x), height: abs(b.y - a.y)))
-                }
+                if let r = MarkGeometry.rect(for: s.points) { rects.append(r) }
             }
             let bp = CGMutablePath()
+            var tags = 0
             for r in rects {
-                let l = r.offsetBy(dx: -screenFrame.minX, dy: -screenFrame.minY)
-                bp.addRect(l)
-                // Hatching: diagonal lines so it reads as "hidden".
-                var x = l.minX - l.height
-                while x < l.maxX {
-                    bp.move(to: CGPoint(x: max(x, l.minX), y: l.minY + max(0, l.minX - x)))
-                    let end = min(x + l.height, l.maxX)
-                    bp.addLine(to: CGPoint(x: end, y: l.minY + (end - x)))
-                    x += 10
+                let l = r.offsetBy(dx: -screenFrame.minX, dy: -screenFrame.minY).insetBy(dx: 0.75, dy: 0.75)
+                guard l.width > 2, l.height > 2 else { continue }
+                let radius = min(8, l.width / 2, l.height / 2)
+                bp.addRoundedRect(in: l, cornerWidth: radius, cornerHeight: radius)
+                // Tag only where it fits; it sits inside the top-left corner.
+                if l.width > 150, l.height > 30 {
+                    let tag = blurTag(tags)
+                    tag.position = CGPoint(x: l.minX + 6, y: l.maxY - 25)
+                    tag.isHidden = false
+                    tags += 1
                 }
             }
+            blurTagPool.dropFirst(tags).forEach { $0.isHidden = true }
+            blurHalo.path = bp
             blurLayer.path = bp
             blurMask.path = CGPath(rect: hole, transform: nil)
+
+            refreshEditChrome(editableMarks: model.editableMarks)
         } else {
             inkLayers.values.forEach { $0.path = nil; $0.shadowPath = nil }
             blurLayer.path = nil
+            blurHalo.path = nil
+            blurTagPool.forEach { $0.isHidden = true }
             inkCache = [:]
             numberCache.values.forEach { $0.removeFromSuperlayer() }
             numberCache = [:]
+            clearEditChrome()
         }
 
         // Label.
@@ -425,5 +709,99 @@ final class OverlayView: NSView {
         } else {
             badgeLayer.isHidden = true
         }
+    }
+
+    private func clearEditChrome() {
+        hoverHaloLayer.path = nil
+        hoverLayer.path = nil
+        selectionHaloLayer.path = nil
+        selectionLayer.path = nil
+        handleLayers.forEach { $0.isHidden = true }
+    }
+
+    private func refreshEditChrome(editableMarks: [EditableMark]) {
+        func toLocal(_ p: CGPoint) -> CGPoint { CGPoint(x: p.x - screenFrame.minX, y: p.y - screenFrame.minY) }
+        func toLocal(_ r: CGRect) -> CGRect { r.offsetBy(dx: -screenFrame.minX, dy: -screenFrame.minY) }
+
+        // 1. Subtle hover highlight on an unselected editable mark.
+        if let hoverID = model.hoveredMarkID, hoverID != model.selectedMarkID,
+           let mark = editableMarks.first(where: { $0.id == hoverID }) {
+            let p = CGMutablePath()
+            switch mark.tool {
+            case .box, .blur:
+                if let r = MarkGeometry.rect(for: mark.points) {
+                    let lr = toLocal(r).insetBy(dx: -2, dy: -2)
+                    let rad = min(8, lr.width / 4, lr.height / 4)
+                    p.addRoundedRect(in: lr, cornerWidth: rad, cornerHeight: rad)
+                }
+            case .ellipse:
+                if let r = MarkGeometry.rect(for: mark.points) {
+                    p.addEllipse(in: toLocal(r).insetBy(dx: -2, dy: -2))
+                }
+            case .arrow:
+                if let a = mark.points.first, let b = mark.points.last {
+                    p.move(to: toLocal(a))
+                    p.addLine(to: toLocal(b))
+                }
+            case .pen: break
+            }
+            hoverHaloLayer.path = p
+            hoverLayer.path = p
+        } else {
+            hoverHaloLayer.path = nil
+            hoverLayer.path = nil
+        }
+
+        // 2. Selected mark bounding outline + resize/endpoint handles.
+        guard let selID = model.selectedMarkID,
+              let mark = editableMarks.first(where: { $0.id == selID }) else {
+            selectionHaloLayer.path = nil
+            selectionLayer.path = nil
+            handleLayers.forEach { $0.isHidden = true }
+            return
+        }
+
+        let outline = CGMutablePath()
+        if mark.tool == .arrow {
+            if let a = mark.points.first, let b = mark.points.last {
+                outline.move(to: toLocal(a))
+                outline.addLine(to: toLocal(b))
+            }
+            selectionLayer.lineDashPattern = [4, 3]
+            selectionHaloLayer.lineDashPattern = [4, 3]
+        } else if let r = MarkGeometry.rect(for: mark.points) {
+            let lr = toLocal(r)
+            outline.addRect(lr)
+            selectionLayer.lineDashPattern = nil
+            selectionHaloLayer.lineDashPattern = nil
+        }
+        selectionHaloLayer.path = outline
+        selectionLayer.path = outline
+
+        let handles = MarkGeometry.handles(for: mark)
+        var used = 0
+        for (kind, globalPt) in handles {
+            let lp = toLocal(globalPt)
+            guard bounds.insetBy(dx: -14, dy: -14).contains(lp) else { continue }
+            let layer = handleLayer(used)
+            switch kind {
+            case .top, .bottom:
+                layer.bounds = CGRect(x: 0, y: 0, width: 12, height: 5)
+                layer.cornerRadius = 2.5
+            case .left, .right:
+                layer.bounds = CGRect(x: 0, y: 0, width: 5, height: 12)
+                layer.cornerRadius = 2.5
+            case .start, .end:
+                layer.bounds = CGRect(x: 0, y: 0, width: 10, height: 10)
+                layer.cornerRadius = 5
+            default:
+                layer.bounds = CGRect(x: 0, y: 0, width: 9, height: 9)
+                layer.cornerRadius = 4.5
+            }
+            layer.position = lp
+            layer.isHidden = false
+            used += 1
+        }
+        handleLayers.dropFirst(used).forEach { $0.isHidden = true }
     }
 }

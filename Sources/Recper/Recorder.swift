@@ -23,6 +23,39 @@ final class Recorder {
         guard let a = s.points.first, let b = s.points.last else { return nil }
         return CGRect(x: min(a.x, b.x), y: min(a.y, b.y), width: abs(b.x - a.x), height: abs(b.y - a.y))
     }
+
+    private enum UndoAction {
+        case addPending(UUID)
+        case addBlur(UUID)
+        case editPending(id: UUID, oldPoints: [CGPoint])
+        case editBlur(id: UUID, oldPoints: [CGPoint])
+        case deletePending(stroke: LiveStroke, index: Int, element: String?)
+        case deleteBlur(stroke: LiveStroke, index: Int)
+
+        var pendingID: UUID? {
+            switch self {
+            case .addPending(let id), .editPending(let id, _): id
+            case .deletePending(let s, _, _): s.id
+            default: nil
+            }
+        }
+    }
+
+    private var undoStack: [(time: Double, action: UndoAction)] = []
+
+    var canUndo: Bool { !pending.isEmpty || !undoStack.isEmpty || !shots.isEmpty }
+
+    /// Editable marks currently on screen in bottom-to-top z-order (blurs underneath ink marks).
+    var editableMarks: [EditableMark] {
+        blurs.map { EditableMark(id: $0.id, tool: $0.tool, points: $0.points) }
+            + pending.filter { $0.tool != .pen && $0.tool != .blur }
+                .map { EditableMark(id: $0.id, tool: $0.tool, points: $0.points) }
+    }
+
+    func hasMark(id: UUID) -> Bool {
+        pending.contains { $0.id == id } || blurs.contains { $0.id == id }
+    }
+
     private var capturing = false
     /// Auto-capture: when a sentence ends or after a short pause (so drawing isn't interrupted).
     private var ticker: Timer?
@@ -35,8 +68,8 @@ final class Recorder {
     private var lastPen: (n: Int, color: InkColor, box: CGRect, end: Double)?
     static let groupGap: Double = 2
     static let groupReach: CGFloat = 90
-    /// UI element under each stroke, keyed by the stroke's `t`.
-    private var elements: [Double: String] = [:]
+    /// UI element under each stroke, keyed by the stroke's unique `id`.
+    private var elements: [UUID: String] = [:]
 
     var onChange: (() -> Void)?
     var onError: ((String) -> Void)?
@@ -118,8 +151,12 @@ final class Recorder {
             return
         }
         if s.tool == .blur {
-            blurs.append(pending.removeLast())
+            let b = pending.removeLast()
+            blurs.append(b)
+            undoStack.append((now, .addBlur(b.id)))
             onChange?()
+        } else {
+            undoStack.append((now, .addPending(s.id)))
         }
         if s.tool == .pen, let n = s.n {
             let xs = s.points.map(\.x), ys = s.points.map(\.y)
@@ -132,22 +169,133 @@ final class Recorder {
         lookUpElement(s)
     }
 
-    func undo() {
-        if !pending.isEmpty {
-            release(pending.removeLast())
-        } else if let b = blurs.last, b.t > (shots.last?.taken ?? -1) {
-            blurs.removeLast()          // last action was a blur
-        } else if let last = shots.last {
-            deleteShot(last.id); return
-        }
+    /// Creates an ellipse mark from a cursor-mode circle gesture in the current ink color with the next mark number.
+    @discardableResult
+    func addGestureEllipse(_ rect: CGRect, color: InkColor) -> LiveStroke {
+        lastPen = nil
+        markSeq += 1
+        let t = now
+        let stroke = LiveStroke(tool: .ellipse, t: t, points: MarkGeometry.points(for: rect), times: [t, t], color: color, n: markSeq)
+        pending.append(stroke)
+        undoStack.append((t, .addPending(stroke.id)))
+        lastInk = t
+        lookUpElement(stroke)
         onChange?()
+        return stroke
+    }
+
+    // MARK: Editing marks (move, resize, delete)
+
+    /// Live geometry update while dragging a mark's body or handle (no undo snapshot yet).
+    func updateMark(id: UUID, points: [CGPoint]) {
+        if let i = pending.firstIndex(where: { $0.id == id }) {
+            pending[i].points = points
+            onChange?()
+        } else if let i = blurs.firstIndex(where: { $0.id == id }) {
+            blurs[i].points = points
+            onChange?()
+        }
+    }
+
+    /// Commits a finished move/resize drag onto the undo stack and refreshes Accessibility lookup for the new position.
+    func commitMarkEdit(id: UUID, oldPoints: [CGPoint]) {
+        if let i = pending.firstIndex(where: { $0.id == id }) {
+            guard pending[i].points != oldPoints else { return }
+            undoStack.append((now, .editPending(id: id, oldPoints: oldPoints)))
+            lastInk = now
+            elements[id] = nil
+            lookUpElement(pending[i])
+            onChange?()
+        } else if let i = blurs.firstIndex(where: { $0.id == id }) {
+            guard blurs[i].points != oldPoints else { return }
+            undoStack.append((now, .editBlur(id: id, oldPoints: oldPoints)))
+            onChange?()
+        }
+    }
+
+    /// Deletes a selected mark (pending or blur) and records it for Undo.
+    @discardableResult
+    func deleteMark(id: UUID) -> Bool {
+        if let i = pending.firstIndex(where: { $0.id == id }) {
+            let s = pending.remove(at: i)
+            let elem = elements[s.id]
+            release(s)
+            undoStack.append((now, .deletePending(stroke: s, index: i, element: elem)))
+            onChange?()
+            return true
+        }
+        if let i = blurs.firstIndex(where: { $0.id == id }) {
+            let b = blurs.remove(at: i)
+            undoStack.append((now, .deleteBlur(stroke: b, index: i)))
+            onChange?()
+            return true
+        }
+        return false
+    }
+
+    func undo() {
+        let lastShotTaken = shots.last?.taken ?? -1
+        // If there is a newer mark action (or pending ink waiting), undo from the mark stack;
+        // otherwise, if a screenshot was the most recent action, remove the last screenshot.
+        if let top = undoStack.last, (!pending.isEmpty || top.time > lastShotTaken) {
+            undoStack.removeLast()
+            if applyUndo(top.action) {
+                onChange?()
+                return
+            }
+            // Stale entry (e.g. target already removed); recurse once to undo the next valid item.
+            undo()
+            return
+        }
+        if let last = shots.last {
+            deleteShot(last.id)
+            return
+        }
+        if let top = undoStack.popLast() {
+            if applyUndo(top.action) {
+                onChange?()
+            } else {
+                undo()
+            }
+        }
+    }
+
+    private func applyUndo(_ action: UndoAction) -> Bool {
+        switch action {
+        case .addPending(let id):
+            guard let i = pending.firstIndex(where: { $0.id == id }) else { return false }
+            release(pending.remove(at: i))
+            return true
+        case .addBlur(let id):
+            guard let i = blurs.firstIndex(where: { $0.id == id }) else { return false }
+            blurs.remove(at: i)
+            return true
+        case .editPending(let id, let oldPoints):
+            guard let i = pending.firstIndex(where: { $0.id == id }) else { return false }
+            pending[i].points = oldPoints
+            elements[id] = nil
+            lookUpElement(pending[i])
+            return true
+        case .editBlur(let id, let oldPoints):
+            guard let i = blurs.firstIndex(where: { $0.id == id }) else { return false }
+            blurs[i].points = oldPoints
+            return true
+        case .deletePending(let s, let idx, let elem):
+            pending.insert(s, at: min(idx, pending.count))
+            if let elem { elements[s.id] = elem } else { lookUpElement(s) }
+            if let n = s.n, n > markSeq { markSeq = n }
+            return true
+        case .deleteBlur(let b, let idx):
+            blurs.insert(b, at: min(idx, blurs.count))
+            return true
+        }
     }
 
     /// If the discarded stroke had the latest number, release it (keeps numbering gapless).
     private func release(_ s: LiveStroke) {
         if let n = s.n, n == markSeq, !pending.contains(where: { $0.n == n }), !shots.contains(where: { $0.marks.contains { $0.n == n } }) { markSeq -= 1 }
         if let lp = lastPen, lp.n == s.n, !pending.contains(where: { $0.n == lp.n }) { lastPen = nil }
-        elements[s.t] = nil
+        elements[s.id] = nil
     }
 
     /// Finds the element under a mark via the accessibility tree (if permitted; doesn't block the main thread).
@@ -166,10 +314,10 @@ final class Recorder {
         if case .window(_, let wp, _, _) = target { pid = wp }
         else { pid = WindowPicker.window(at: q, in: WindowList.onScreen(), excludingPID: WindowList.ownPID)?.pid }
         guard let pid else { return }
-        let t = s.t
+        let id = s.id
         Task { [weak self] in
             let d = await Task.detached { AXElement.describe(at: q, pid: pid) }.value
-            if let d { self?.elements[t] = d }
+            if let d { self?.elements[id] = d }
         }
     }
 
@@ -236,7 +384,7 @@ final class Recorder {
                 let marks = (blurList.filter { Self.rect($0)?.intersects(tgt.frame) == true } + strokes).map { s in
                     Mark(tool: s.tool, t: (s.t * 10).rounded() / 10, t1: ((s.times.last ?? s.t) * 10).rounded() / 10,
                          points: s.points.map { MarkMapper.pixel($0, target: tgt.frame, scale: scale) },
-                         color: s.tool == .blur ? nil : s.color, n: s.n, element: elements[s.t])
+                         color: s.tool == .blur ? nil : s.color, n: s.n, element: elements[s.id])
                 }
                     .reduce(into: [Mark]()) { acc, m in
                         // Strokes with the same number (handwriting/scribbles) are one mark: points merge, the bounding box covers all.
@@ -250,8 +398,13 @@ final class Recorder {
                 shots.append(Shot(id: id, t: (t * 100).rounded() / 100, file: file, size: [img.width, img.height], marks: marks, taken: (taken * 100).rounded() / 100))
                 // Captured strokes leave the screen; strokes drawn in the meantime stay.
                 onCaptured?(strokes)
-                let done = Set(strokes.map(\.t))
-                pending.removeAll { done.contains($0.t) }
+                let done = Set(strokes.map(\.id))
+                pending.removeAll { done.contains($0.id) }
+                // Drop pending-mark undo actions for strokes that have been burned into the shot.
+                undoStack.removeAll { entry in
+                    if let pid = entry.action.pendingID { return done.contains(pid) || entry.time <= taken }
+                    return false
+                }
             } catch {
                 onError?("Screenshot failed: \(error.localizedDescription)")
             }

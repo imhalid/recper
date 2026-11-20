@@ -7,14 +7,25 @@ import RecperCore
 
 /// A stroke on screen (global Cocoa coordinates).
 struct LiveStroke {
+    var id: UUID
     var tool: Tool
     var t: Double
     var points: [CGPoint]
     /// For the pen, each point's time (s): speed → brush width.
-    var times: [Double] = []
-    var color: InkColor = .red
+    var times: [Double]
+    var color: InkColor
     /// Mark number (none for blur).
     var n: Int?
+
+    init(id: UUID = UUID(), tool: Tool, t: Double, points: [CGPoint], times: [Double] = [], color: InkColor = .red, n: Int? = nil) {
+        self.id = id
+        self.tool = tool
+        self.t = t
+        self.points = points
+        self.times = times
+        self.color = color
+        self.n = n
+    }
 }
 
 extension InkColor {
