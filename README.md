@@ -1,5 +1,7 @@
 <div align="center">
 
+<sub>💡 Inspired by <a href="https://x.com/jynniit/status/2123519487257514205">this post</a> · cc <a href="https://x.com/jynniit">@jynniit</a></sub>
+
 <img src="docs/media/logo.png" alt="recper logo" width="112">
 
 # recper
