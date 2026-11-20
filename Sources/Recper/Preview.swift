@@ -397,6 +397,8 @@ extension Preview {
                      scale: 1.5, to: url.appendingPathComponent("settings-\(sec.rawValue).png"))
         }
         writePNG(CursorPreviewSheet(), scale: 1.5, to: url.appendingPathComponent("cursors.png"))
+        // 7. The logo (opaque tile, so it reads on GitHub's light and dark themes).
+        writePNG(RecperMark(size: 160, solid: true).padding(8), scale: 2, to: url.appendingPathComponent("logo.png"))
         print("ok \(dir)")
     }
 

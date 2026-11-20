@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/media/logo.png" alt="recper logo" width="112">
+
 # recper
 
 **Talk and draw on your screen. Your coding agent gets a clean checklist with annotated screenshots.**

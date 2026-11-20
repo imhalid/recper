@@ -2092,18 +2092,25 @@ private struct MetaRow: View {
 
 // MARK: Reusable Flat Visual Primitives
 
-private struct RecperMark: View {
+/// The recper logo: a rounded tile with an inward-fading aurora rim, a white ring and a green dot.
+/// `solid` gives the tile an opaque dark fill (for places without a dark background, like the README).
+struct RecperMark: View {
     let size: CGFloat
+    var solid = false
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: size * 0.25, style: .continuous)
         ZStack {
-            shape.fill(Color.white.opacity(0.08))
+            if solid {
+                shape.fill(LinearGradient(colors: [Color(white: 0.16), Color(white: 0.07)], startPoint: .top, endPoint: .bottom))
+            } else {
+                shape.fill(Color.white.opacity(0.08))
+            }
             // Aurora rim that fades inward: a blurred band clipped to the tile (so it only bleeds inside) under a thin crisp edge.
             shape.strokeBorder(Aurora.conic, lineWidth: size * 0.16)
                 .blur(radius: size * 0.09)
                 .clipShape(shape)
                 .opacity(0.45)
-            shape.strokeBorder(Aurora.conic, lineWidth: 1).opacity(0.65)
+            shape.strokeBorder(Aurora.conic, lineWidth: max(1, size * 0.012)).opacity(0.65)
             Circle()
                 .strokeBorder(.white.opacity(0.82), lineWidth: max(1.4, size * 0.055))
                 .frame(width: size * 0.56, height: size * 0.56)
