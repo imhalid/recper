@@ -1,25 +1,96 @@
+<div align="center">
+
 # recper
 
-**Talk and draw on your screen; your coding agent gets a clean, timestamped checklist with annotated screenshots.**
+**Talk and draw on your screen. Your coding agent gets a clean checklist with annotated screenshots.**
 
-recper is a tiny macOS menu-bar app for giving visual feedback to coding agents such as Claude Code, Codex or Antigravity.
+A tiny macOS menu-bar app for giving visual feedback to coding agents such as Claude Code, Codex or Antigravity.
+
+![macOS 26+](https://img.shields.io/badge/macOS-26%2B-black?logo=apple)
+![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)
+![MCP](https://img.shields.io/badge/MCP-server-6E56CF)
+![On-device](https://img.shields.io/badge/speech-on--device-2EA44F)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
+<img src="docs/media/hero.png" alt="A recper session: numbered marks on a web page, a blurred API key, live captions and the session bar" width="900">
+
+</div>
+
 Instead of typing long descriptions or pasting screenshots one by one, you pick a window, area or screen, say what's wrong
 and circle it. recper transcribes your speech on-device, captures screenshots with your marks burned in, binds each
 screenshot to the sentence you were saying, and hands the result to your agent as a Markdown file, via the clipboard or over MCP.
 
 It is not a screen recorder: no video, no audio files. Just text, numbered marks and screenshots.
 
+## How it works
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+**1. Pick a target**
+
+Press `⌥⇧R` and choose a window, an area or a whole screen. Everything outside the target is dimmed and the screen
+edges light up while you choose.
+
+</td>
+<td width="50%"><img src="docs/media/choose.gif" alt="Choosing a window, dragging an area, choosing a screen"></td>
+</tr>
+<tr>
+<td valign="top">
+
+**2. Talk and draw**
+
+Speak naturally; the live caption follows you. Draw with pen, box, ellipse, arrow or blur in six colors. Every mark gets
+a number. Press `⌥⇧S` from any app for the radial menu at your pointer: pick a tool, undo, finish, or click the center
+for a screenshot.
+
+</td>
+<td><img src="docs/media/radial.gif" alt="The radial menu cycling through Cursor, Pen, Box, Arrow, Finish, Undo, Blur and the shutter"></td>
+</tr>
+<tr>
+<td valign="top">
+
+**3. Fix marks in place**
+
+Click a box, ellipse, arrow or blur region to move it or resize it from its edges and corners; `⌫` deletes it.
+Blur regions stay readable on screen as an outline and are pixelated only in the screenshot.
+
+</td>
+<td><img src="docs/media/edit-marks.png" alt="A selected blur region with resize handles"></td>
+</tr>
+<tr>
+<td valign="top">
+
+**4. Review and send**
+
+Finish with `⌥⇧R` (or say "finish"). Fix sentences, drop screenshots you don't need, then send: the prompt is on your
+clipboard and the files are on disk.
+
+</td>
+<td><img src="docs/media/review.png" alt="The review screen with sentences and screenshot thumbnails"></td>
+</tr>
+</table>
+
+### What your agent gets
+
+Marks are burned into the screenshot with their numbers, and blurred regions are pixelated before anything is written to disk.
+
+<img src="docs/media/result.png" alt="The screenshot an agent receives: numbered marks and a pixelated API key" width="720">
+
 ## Features
 
-- **Pick a target**: window, area or full screen (`⌥⇧R`). Everything outside the target is dimmed.
-- **On-device dictation** with Apple's `SpeechAnalyzer` / `DictationTranscriber`; live text while you talk.
-- **Draw & edit** with pen, box, ellipse, arrow and blur in 6 colors. Click any box, ellipse, arrow or blur region while on screen to move, resize, or delete (`⌫`) it. Blur is applied permanently before anything is saved.
-- **Circle gesture**: in cursor mode, move the mouse in a closed circle around something (without clicking) to drop a numbered ellipse mark automatically (configurable in Settings).
-- **Numbered marks**: every mark gets a `#n` badge, and the UI element under it is looked up via Accessibility
-  (role, title, identifier).
-- **Screenshots** with a shutter: `Space` / `T` / `⏎` while drawing, `⌥⇧S` anywhere, or the button in the bar.
+- **Pick a target**: window, area or full screen (`⌥⇧R`), with rounded frames and an aurora glow around the screen edges.
+- **On-device dictation** with Apple's `SpeechAnalyzer` / `DictationTranscriber`; live captions while you talk; pick the language in Settings.
+- **Draw & edit** with pen, box, ellipse, arrow and blur in 6 colors. Move, resize or delete marks until they are captured.
+- **Circle gesture**: in cursor mode, circle something with the mouse (without clicking) to drop a numbered ellipse around it.
+- **Radial menu** (`⌥⇧S`) at the pointer, from any app: cursor, pen, box, arrow, finish, undo, blur; the center takes a screenshot.
+- **Numbered marks**: every mark gets a `#n` badge, and the UI element under it is looked up via Accessibility (role, title, identifier).
+- **Screenshots** with a shutter: `Space` / `T` / `⏎` while drawing, the radial menu, or the button in the bar.
 - **Voice commands**: "take screenshot", "undo", "finish".
-- **Review screen** before sending (optional): edit sentences, click screenshots to inspect them large, or remove unneeded items (`⌘⏎` sends, `Esc` saves without copying).
+- **Review screen** before sending (optional): edit sentences, inspect screenshots large, remove what you don't need.
+- **Sounds**: short synthesized UI sounds (no audio files), with a volume setting.
+- **Settings window** for defaults, dictation, shortcuts, permissions, agent setup and storage.
 - **Output**: `feedback.md` checklist + `session.json` + `shots/*.png`, and a ready-to-paste prompt on the clipboard.
 - **MCP server** (`Recper --mcp`) so agents can read feedback, check off items, and ask you for feedback themselves.
 
@@ -48,14 +119,18 @@ survive rebuilds.
 | Screen Recording | Capturing the selected window, area or screen. |
 | Accessibility (optional) | Naming the UI element under each mark. |
 
-## Usage
+The Settings window shows the live status of each permission with a button to grant it.
 
-1. Press `⌥⇧R` (or click the menu-bar icon) and choose a window, area or screen.
-2. Talk. Draw on anything you mention. Press the shutter (`Space`) when the marks are ready; marks still on screen
-   are captured automatically when you finish. (Auto-capture at the end of each sentence can be enabled from the menu.)
-3. Press `⌥⇧R` again (or say "finish") to finish. Review, send, and paste the prompt into your agent.
+## Settings
 
-### Shortcuts
+Right-click (or ⌥-click) the menu-bar icon and choose **Settings…** (`⌘,`), or open `recper://settings`.
+
+<img src="docs/media/settings-general.png" alt="Settings: General" width="49%"> <img src="docs/media/settings-shortcuts.png" alt="Settings: Shortcuts" width="49%">
+
+General (default mode, review, auto-capture, sounds, launch at login) · Drawing (default tool and color, circle gesture) ·
+Dictation (language, on-screen terms) · Shortcuts · Permissions · Agents & MCP (copyable setup commands) · Storage · About.
+
+## Shortcuts
 
 | Key | Action |
 |---|---|
@@ -67,11 +142,17 @@ survive rebuilds.
 | `⌘Z` | Undo the last mark, edit, deletion, or screenshot |
 | `⌫` / `Delete` | Remove the selected mark |
 | `Esc` | Deselect a selected mark; otherwise back to the cursor (clicks go to the app underneath) |
-| Click & drag a mark | Select a box, ellipse, arrow, or blur region to move its body or drag edges/corners/endpoints to resize (works while drawing and in cursor mode when hovering a mark) |
-| Circle with mouse | In cursor mode (without clicking), loop around a region to drop a numbered ellipse mark |
-| `⌥⇧S` | During a session, from any app: opens a radial menu at the pointer; click cursor, pen, box, arrow, finish, undo or blur, or the center for a screenshot. Click outside, Esc or `⌥⇧S` closes it |
-| `⌥⇧V` `P` `B` `O` `A` `X` `S` `Z` | During a session, from any app: cursor, pen, box, ellipse, arrow, blur, screenshot, undo |
-| `⌘⏎` / `Esc` (Review) | Send (save & copy prompt) / save without copying; click any thumbnail to inspect it large |
+| Click & drag a mark | Move a box, ellipse, arrow or blur region; drag its edges, corners or ends to resize |
+| Circle with the mouse | In cursor mode (without clicking), drop a numbered ellipse around what you circled |
+| `⌥⇧S` | During a session, from any app: radial menu at the pointer; click an item, or the center for a screenshot. Click outside, `Esc` or `⌥⇧S` closes it |
+| `⌥⇧V` `P` `B` `O` `A` `X` `Z` | During a session, from any app: cursor, pen, box, ellipse, arrow, blur, undo |
+| `⌘⏎` / `Esc` (Review) | Send (save & copy prompt) / save without copying |
+
+### Drawing cursors
+
+Each tool has its own cursor with an exact hot spot and the current ink color, readable on light, dark and busy backgrounds.
+
+<img src="docs/media/cursors.png" alt="Drawing cursors for every tool on light, dark and gradient backgrounds" width="720">
 
 ## Output
 
@@ -125,6 +206,18 @@ scripts/test.sh
 - Optional local Whisper model for speech recognition
 - Linux support
 - Short motion clips alongside screenshots
+
+## README media
+
+The images above are rendered from synthetic scenes (no screen capture, no personal data):
+
+```sh
+$(swift build -c release --show-bin-path)/Recper --render-media docs/media
+```
+
+## Credits
+
+The UI sounds follow the sound design of [chuanqisun/spaceship](https://github.com/chuanqisun/spaceship) (MIT License, © 2026 Sun).
 
 ## License
 

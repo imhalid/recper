@@ -271,3 +271,264 @@ private struct CursorPreviewSheet: View {
         .background(Color(white: 0.16))
     }
 }
+
+// MARK: README media
+
+import ImageIO
+import UniformTypeIdentifiers
+
+/// `Recper --render-media <dir>`: renders the README's screenshots and GIFs from synthetic scenes
+/// (a fake app window on a dark aurora wallpaper). No screen capture, no permissions, no personal data.
+extension Preview {
+    private static let scene = CGSize(width: 1440, height: 900)
+    private static let appWindow = CGRect(x: 260, y: 160, width: 900, height: 600)      // Cocoa coordinates (y up)
+
+    static func renderMedia(to dir: String) {
+        let url = URL(fileURLWithPath: dir)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        BarView.flatBackground = true
+        let screenRect = CGRect(origin: .zero, size: scene)
+        let win = appWindow
+        let target = CaptureTarget.window(id: 1, pid: 1, app: "Browser", frame: win)
+
+        // 1. Hero: a session with marks, a blur region and the session bar with live captions.
+        let demoBlur = LiveStroke(tool: .blur, t: 0.5, points: [CGPoint(x: 560, y: 440), CGPoint(x: 860, y: 500)])
+        let session = OverlayModel()
+        session.phase = .session(target)
+        session.strokes = { demoStrokes }
+        session.blurs = { [demoBlur] }
+        let bar = BarModel()
+        bar.meter.samples = (0..<Meter.count).map { i in Float(abs(sin(Double(i) * 0.9)) * (0.25 + Double(i) / 30)) }
+        bar.target = target
+        bar.startedAt = Date().addingTimeInterval(-72)
+        bar.tool = .pen
+        bar.color = .red
+        bar.shotCount = 2
+        bar.thumbs = (1...2).map { i in Thumb(id: "0\(i)", image: thumb(hue: 0.55 + Double(i) * 0.08)) }
+        bar.liveText = "This button's padding is too large, shrink it a bit. And hide that key before sending"
+        let hero = sceneView(overlay: overlayImage(session, screen: screenRect)) {
+            VStack { Spacer(); BarView(model: bar) }
+        }
+        writePNG(hero, scale: 1, to: url.appendingPathComponent("hero.png"))
+
+        // 2. Choosing a target: window → area (dragging) → screen, with the edge glow and the chooser bar.
+        let glow = GlowState(); glow.on = true
+        var frames: [(CGImage, Double)] = []
+        func chooseFrame(_ mode: CaptureMode, _ configure: (OverlayModel) -> Void, delay: Double) {
+            let m = OverlayModel()
+            m.phase = .choosing(mode)
+            configure(m)
+            let b = BarModel(); b.mode = mode
+            let v = sceneView(overlay: overlayImage(m, screen: screenRect)) {
+                ZStack {
+                    EdgeGlow(state: glow, radius: 0)
+                    VStack { Spacer(); BarView(model: b) }
+                }
+            }
+            if let img = cgImage(v, scale: 2.0 / 3) { frames.append((img, delay)) }
+        }
+        chooseFrame(.window, { $0.hover = (win, "Browser") }, delay: 1.3)
+        let start = CGPoint(x: 420, y: 620)
+        for k in 1...8 {
+            let f = Double(k) / 8
+            let r = CGRect(x: start.x, y: start.y - 300 * f, width: 520 * f, height: 300 * f)
+            chooseFrame(.area, { $0.drag = (start, screenRect, r) }, delay: k == 8 ? 1.3 : 0.06)
+        }
+        chooseFrame(.screen, { $0.hover = (screenRect, "Built-in Display") }, delay: 1.3)
+        writeGIF(frames, to: url.appendingPathComponent("choose.gif"))
+
+        // 3. Radial menu (⌥⇧S): the selection travels around the dial, then rests on the shutter.
+        let items = [("cursorarrow", "Cursor"), ("pencil.tip", "Pen"), ("rectangle", "Box"), ("arrow.up.right", "Arrow"),
+                     ("checkmark", "Finish"), ("arrow.uturn.backward", "Undo"), ("eye.slash", "Blur")]
+        frames = []
+        let n = items.count
+        for i in 0...n {
+            let rm = RadialModel(); rm.shown = true
+            var offset = CGPoint.zero
+            if i < n {
+                let deg = Double(i) * 360 / Double(n)
+                let rad = (deg - 90) * .pi / 180
+                offset = CGPoint(x: cos(rad) * 82, y: sin(rad) * 82)
+                rm.selected = i
+                rm.selectorAngle = deg
+                rm.pointer = RadialModel.Pointer(offset: offset, distance: 82, angle: deg, hasAngle: true)
+            } else {
+                rm.selected = RadialMenu.center
+            }
+            let v = ZStack {
+                Wallpaper()
+                RadialView(model: rm, items: items)
+                pointerArrow.offset(x: offset.x + 7, y: offset.y + 10)
+            }
+            .frame(width: 560, height: 520)
+            .clipped()
+            if let img = cgImage(v, scale: 1) { frames.append((img, i == n ? 1.4 : 0.55)) }
+        }
+        writeGIF(frames, to: url.appendingPathComponent("radial.gif"))
+
+        // 4. Editing a mark: the blur region selected with its handles.
+        let edit = OverlayModel()
+        edit.phase = .session(target)
+        edit.strokes = { demoStrokes }
+        edit.blurs = { [demoBlur] }
+        edit.selectedMarkID = demoBlur.id
+        writePNG(sceneView(overlay: overlayImage(edit, screen: screenRect)) { EmptyView() }
+                    .modifier(Crop(rect: CGRect(x: 380, y: 230, width: 760, height: 420))),
+                 scale: 1.5, to: url.appendingPathComponent("edit-marks.png"))
+
+        // 5. The screenshot an agent receives: marks burned in, the blur region pixelated.
+        if let shot = composedShot(blur: demoBlur, win: win) {
+            try? Capture.writePNG(shot, to: url.appendingPathComponent("result.png"))
+        }
+
+        // 6. Review, settings and cursors.
+        let shotImg = thumb(hue: 0.58)
+        let segs = [Segment(id: "s1", t0: 1, t1: 4, text: "This button's padding is too large, shrink it a bit"),
+                    Segment(id: "s2", t0: 6, t1: 9, text: "Make the price stand out more"),
+                    Segment(id: "s3", t0: 11, t1: 13, text: "The arrow at 2 points at the title, it should be bolder")]
+        let shots = [Shot(id: "01", t: 2, file: "shots/01.png", size: [1800, 1200], marks: [Mark(tool: .box, t: 2, points: [[10, 10], [200, 90]], n: 1, element: "AXButton \"Save\"")], segment: "s1"),
+                     Shot(id: "02", t: 7, file: "shots/02.png", size: [1800, 1200], marks: [], segment: "s2")]
+        let doc = SessionDoc(startedAt: Date(), duration: 14, target: TargetInfo(kind: "window", app: "Browser", label: "Browser", size: [1800, 1200]),
+                             locale: "en-US", segments: segs, shots: shots)
+        writePNG(ReviewView(model: ReviewModel(doc: doc, images: ["01": shotImg, "02": shotImg])).padding(28).background(Wallpaper()),
+                 scale: 1.5, to: url.appendingPathComponent("review.png"))
+        for sec in [SettingsSection.allCases[0], SettingsSection.allCases[3]] {
+            writePNG(SettingsView(model: .preview(section: sec)).padding(28).background(Wallpaper()),
+                     scale: 1.5, to: url.appendingPathComponent("settings-\(sec.rawValue).png"))
+        }
+        writePNG(CursorPreviewSheet(), scale: 1.5, to: url.appendingPathComponent("cursors.png"))
+        print("ok \(dir)")
+    }
+
+    // MARK: Scene pieces
+
+    /// Dark wallpaper with soft aurora light.
+    private struct Wallpaper: View {
+        var body: some View {
+            ZStack {
+                LinearGradient(colors: [Color(red: 0.06, green: 0.07, blue: 0.12), Color(red: 0.11, green: 0.08, blue: 0.19)],
+                               startPoint: .topLeading, endPoint: .bottomTrailing)
+                Circle().fill(Aurora.violet.opacity(0.32)).frame(width: 760).blur(radius: 170).offset(x: -420, y: -260)
+                Circle().fill(Aurora.cyan.opacity(0.18)).frame(width: 640).blur(radius: 170).offset(x: 460, y: 280)
+                Circle().fill(Aurora.pink.opacity(0.12)).frame(width: 520).blur(radius: 170).offset(x: 380, y: -320)
+            }
+            .clipped()
+        }
+    }
+
+    /// A fake pricing page whose elements sit under the demo marks.
+    private struct FakeApp: View {
+        var body: some View {
+            ZStack(alignment: .topLeading) {
+                RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.white)
+                // Title bar.
+                HStack(spacing: 7) {
+                    ForEach([Color(red: 1, green: 0.37, blue: 0.34), Color(red: 1, green: 0.74, blue: 0.18), Color(red: 0.16, green: 0.78, blue: 0.25)], id: \.self) {
+                        Circle().fill($0).frame(width: 11, height: 11)
+                    }
+                    Spacer()
+                    Capsule().fill(Color(white: 0.9)).frame(width: 320, height: 20)
+                        .overlay(Text("example.com/pricing").font(.system(size: 11)).foregroundStyle(.gray))
+                    Spacer()
+                }
+                .padding(.horizontal, 14).frame(height: 36)
+                .background(Color(white: 0.95))
+                .clipShape(UnevenRoundedRectangle(topLeadingRadius: 12, topTrailingRadius: 12, style: .continuous))
+                Text("Pricing").font(.system(size: 34, weight: .bold)).foregroundStyle(.black).position(x: 125, y: 112)
+                Text("Simple plans for teams of every size.").font(.system(size: 15)).foregroundStyle(.gray).position(x: 190, y: 152)
+                Text("Most popular").font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
+                    .padding(.horizontal, 14).padding(.vertical, 7).background(Capsule().fill(Color.indigo)).position(x: 740, y: 200)
+                Text("API key").font(.system(size: 14, weight: .semibold)).foregroundStyle(.gray).position(x: 255, y: 290)
+                Text("sk-demo-4f9a-0000-0000").font(.system(size: 14, design: .monospaced)).foregroundStyle(.black)
+                    .position(x: 450, y: 290)
+                Text("Plans renew every month").font(.system(size: 15)).foregroundStyle(.black.opacity(0.75)).position(x: 400, y: 372)
+                Text("Save changes").font(.system(size: 15, weight: .semibold)).foregroundStyle(.white)
+                    .frame(width: 170, height: 46).background(RoundedRectangle(cornerRadius: 10).fill(Color.blue)).position(x: 730, y: 430)
+                Text("Starting at $9/mo").font(.system(size: 20, weight: .semibold)).foregroundStyle(.black).position(x: 190, y: 495)
+            }
+            .frame(width: appWindow.width, height: appWindow.height)
+            .compositingGroup()             // one shadow for the window, not one per text
+            .shadow(color: .black.opacity(0.45), radius: 30, y: 14)
+        }
+    }
+
+    private static var pointerArrow: some View {
+        Image(nsImage: NSCursor.arrow.image).interpolation(.high)
+    }
+
+    /// Wallpaper + fake app + the overlay's layers + extra SwiftUI content (bars, glow) on top.
+    private static func sceneView<Top: View>(overlay: NSImage?, @ViewBuilder top: () -> Top) -> some View {
+        ZStack {
+            Wallpaper()
+            FakeApp().position(x: appWindow.midX, y: scene.height - appWindow.midY)
+            if let overlay { Image(nsImage: overlay).resizable() }
+            top().padding(.bottom, 6)
+        }
+        .frame(width: scene.width, height: scene.height)
+    }
+
+    private struct Crop: ViewModifier {
+        let rect: CGRect
+        func body(content: Content) -> some View {
+            content.frame(width: scene.width, height: scene.height)
+                .offset(x: -rect.minX, y: -rect.minY)
+                .frame(width: rect.width, height: rect.height, alignment: .topLeading)
+                .clipped()
+        }
+    }
+
+    /// The overlay's layer tree rendered on a transparent canvas (Cocoa coordinates, like the real window).
+    private static func overlayImage(_ m: OverlayModel, screen: CGRect) -> NSImage? {
+        let v = OverlayView(model: m, screenFrame: screen)
+        v.refresh()
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(screen.width) * 2, pixelsHigh: Int(screen.height) * 2,
+                                         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                         colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+              let ctx = NSGraphicsContext(bitmapImageRep: rep)?.cgContext, let layer = v.layer else { return nil }
+        ctx.scaleBy(x: 2, y: 2)
+        layer.render(in: ctx)
+        rep.size = screen.size
+        let img = NSImage(size: screen.size)
+        img.addRepresentation(rep)
+        return img
+    }
+
+    private static func thumb(hue: Double) -> NSImage {
+        NSImage(size: NSSize(width: 96, height: 60), flipped: false) { r in
+            NSColor(calibratedHue: hue, saturation: 0.35, brightness: 0.92, alpha: 1).setFill(); r.fill(); return true
+        }
+    }
+
+    /// The fake page as the agent's screenshot (2x), with the demo marks burned in and the key pixelated.
+    private static func composedShot(blur: LiveStroke, win: CGRect) -> CGImage? {
+        let page = FakeApp().frame(width: win.width, height: win.height).padding(0)
+        let r = ImageRenderer(content: page.shadow(radius: 0)); r.scale = 2
+        guard let base = r.cgImage, let rect = Recorder.rect(blur) else { return nil }
+        return Capture.compose(base, strokes: demoStrokes, blurs: [rect], target: win)
+    }
+
+    // MARK: Writers
+
+    private static func cgImage<V: View>(_ v: V, scale: CGFloat) -> CGImage? {
+        let r = ImageRenderer(content: v.environment(\.colorScheme, .dark))
+        r.scale = scale
+        return r.cgImage
+    }
+
+    private static func writePNG<V: View>(_ v: V, scale: CGFloat, to url: URL) {
+        guard let img = cgImage(v, scale: scale) else { return }
+        let rep = NSBitmapImageRep(cgImage: img)
+        try? rep.representation(using: .png, properties: [:])?.write(to: url)
+    }
+
+    private static func writeGIF(_ frames: [(CGImage, Double)], to url: URL) {
+        guard !frames.isEmpty,
+              let d = CGImageDestinationCreateWithURL(url as CFURL, UTType.gif.identifier as CFString, frames.count, nil) else { return }
+        CGImageDestinationSetProperties(d, [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFLoopCount: 0]] as CFDictionary)
+        for (img, delay) in frames {
+            CGImageDestinationAddImage(d, img, [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFDelayTime: delay,
+                                                                                kCGImagePropertyGIFUnclampedDelayTime: delay]] as CFDictionary)
+        }
+        CGImageDestinationFinalize(d)
+    }
+}
